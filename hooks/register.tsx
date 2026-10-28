@@ -190,10 +190,14 @@ async function refreshOnce($: EngineInterface) {
 
     // Show the tree before the (slow, first-time) transcript scans.
     await update($, board, old => ({ ...old, agents, updatedAt: new Date().toISOString() }))
-    for (const a of agents) await scanEvents($, a.id)
     const ids = new Set(agents.map(a => a.id))
-    const messages = [...seen.values()].filter(m => ids.has(m.from)).sort((x, y) => x.at.localeCompare(y.at))
-    await update($, board, () => ({ agents, messages, updatedAt: new Date().toISOString() }))
+    const messagesNow = () => [...seen.values()].filter(m => ids.has(m.from)).sort((x, y) => x.at.localeCompare(y.at))
+    // Save after each transcript, so a reader that cannot wait (the snapshot tool) gets what is loaded so far.
+    for (const a of agents) {
+      await scanEvents($, a.id)
+      await update($, board, old => ({ ...old, messages: messagesNow() }))
+    }
+    await update($, board, () => ({ agents, messages: messagesNow(), updatedAt: new Date().toISOString() }))
 
     const branch = git?.branches[0]
     if (!git || !branch) {
@@ -385,7 +389,10 @@ export const register: Register = on => {
       const id = input.manager.startsWith('session_') ? input.manager : `session_${input.manager}`
       await update($, selected, () => id)
     }
-    await refresh($)
+    // A tool hook has 10 s: wait up to 7 s for the refresh, then write what is loaded.
+    // The 90 s background refresh keeps that recent; a manager change waits for the tree before writing.
+    const done = await Promise.race([refresh($).then(() => true), $.clock.sleep(7_000).then(() => false)])
+    if (!done) assert((await read($, board)).agents[0]?.id === (await read($, selected)), 'the tree for this manager is still loading; call again in a minute')
     const json = await snapshotJson($)
     await $.fs.write(input.path, json)
     const b = await read($, board)
