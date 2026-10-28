@@ -15,7 +15,7 @@ const swarms = atom({ plugin: 'swarm-board', key: 'swarms' } as const, [], { sha
 const selected = atom({ plugin: 'swarm-board', key: 'selected' } as const, '')
 const tab = atom({ plugin: 'swarm-board', key: 'tab' } as const, 'agents')
 const board = atom({ plugin: 'swarm-board', key: 'board' } as const, { agents: [], messages: [], updatedAt: '' }, { shape: 'board-1' })
-const posts = atom({ plugin: 'swarm-board', key: 'posts' } as const, { where: '', perf: [], tests: [] }, { shape: 'posts-1' })
+const posts = atom({ plugin: 'swarm-board', key: 'posts' } as const, { where: '', perf: [], tests: [] }, { shape: 'posts-2' })
 
 type Session = {
   id: string
@@ -73,7 +73,7 @@ async function postFile($: EngineInterface, repo: string, branch: string, path: 
     const svg = await ghFile($, repo, branch, dir + m[2]!.replace(/^\.\//, ''))
     if (svg === null) parts.push({ kind: 'md', text: `_missing plot: ${m[2]}_` })
     else if (svg.length > SVG_MAX) parts.push({ kind: 'md', text: `_plot too large (${svg.length} chars > ${SVG_MAX}): ${m[2]}_` })
-    else parts.push({ kind: 'svg', alt: m[1] || m[2]!, source: svg })
+    else parts.push({ kind: 'svg', alt: m[1] || m[2]!, source: svg, url: `https://github.com/${repo}/blob/${branch}/${dir}${m[2]!.replace(/^\.\//, '')}` })
   }
   flush()
   return parts
@@ -289,6 +289,31 @@ const draw = async ($: EngineInterface, e: RenderInput<'Pane' | 'CommandOutput'>
   )
 }
 
+const EMOJI: Record<string, string> = { working: '🟢', blocked: '🟡', review_ready: '🔵', completed: '✅', failed: '🔴' }
+
+// `/swarm` [agents|msgs|perf|tests] as text, for sessions with no surface attached.
+async function boardText($: EngineInterface, view: string): Promise<string> {
+  const b = await read($, board)
+  const p = await read($, posts)
+  const list = await read($, swarms)
+  const sel = await read($, selected)
+  const name = new Map(b.agents.map(a => [a.id, a.depth === 0 ? 'MANAGER' : a.title]))
+  const head = `**${list.find(s => s.id === sel)?.title ?? 'no swarm found'}** · updated ${b.updatedAt ? hhmm(b.updatedAt) + 'Z' : 'never'} · \`/swarm agents|msgs|perf|tests\``
+  const parts = (ps: Part[], file: string) =>
+    ps.length === 0 ? `_Nothing posted yet in ${p.where} .swarm/${file}._` : ps.map(x => (x.kind === 'md' ? x.text : `[plot: ${x.alt}](${x.url})`)).join('\n\n')
+  if (view === 'msgs')
+    return [head, ...b.messages.slice(-20).map(m => `- ${hhmm(m.at)} **${name.get(m.from) ?? m.from} → ${name.get(m.to) ?? m.to}**: ${m.text.replace(/\s+/g, ' ').slice(0, 300)}`)].join('\n')
+  if (view === 'perf') return `${head}\n\n${parts(p.perf, 'perf.md')}`
+  if (view === 'tests') return `${head}\n\n${parts(p.tests, 'tests.md')}`
+  assert(view === '' || view === 'agents', `unknown view "${view}"; use agents, msgs, perf or tests`)
+  const others = list.filter(s => s.id !== sel).map(s => s.title).join(', ')
+  return [
+    head,
+    ...b.agents.map(a => `${'  '.repeat(a.depth)}- ${EMOJI[a.status] ?? '⚪'} ${a.depth === 0 ? '**MANAGER** ' : ''}${a.title} _(${a.status})_${a.summary ? ` — ${a.summary}` : ''}`),
+    others ? `\nOther swarms: ${others}` : '',
+  ].join('\n')
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'swarm', description: 'Open the swarm board (manager, workers, messages)' })
@@ -298,10 +323,15 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'swarm' }, async $ => {
+  on('command.run', { command: 'swarm' }, async ($, e) => {
     const opened = await $.ui.open({ id: PANE, title: 'Swarm' })
-    void refresh($)
-    return { text: opened.isPlaced ? 'Swarm board opened in the side pane.' : `Side pane not shown here (${opened.reason}); board drawn below.` }
+    if (opened.isPlaced) {
+      void refresh($)
+      return { text: 'Swarm board opened in the side pane.' }
+    }
+    // No surface draws plugin elements here (e.g. a cloud session): print the board as markdown.
+    await refresh($)
+    return { text: await boardText($, e.args.trim()) }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, draw)
