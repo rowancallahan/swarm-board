@@ -9,7 +9,7 @@ const GITHUB = 'github'
 const SVG_MAX = 131_072 // Svg element's source limit
 const REFRESH_MS = 90_000
 const MAX_SESSIONS = 300
-const MAX_EVENTS = 2000 // first scan of one transcript
+const MAX_PAGES = 80 // first scan of one transcript, pages read before the filter
 
 const swarms = atom({ plugin: 'swarm-board', key: 'swarms' } as const, [], { shape: 'swarms-1' })
 const selected = atom({ plugin: 'swarm-board', key: 'selected' } as const, '')
@@ -26,7 +26,8 @@ type Session = {
   post_turn_summary?: { recent_action?: string }
   session_context?: { outcomes?: { git_repository?: { git_info?: { repo: string; branches: string[] } } }[] }
 }
-type Page<T> = { data: T[]; has_more: boolean; first_id?: string; last_id?: string }
+// `data` is left out when a kinds filter kept nothing from the page read (has_more may still be true).
+type Page<T> = { data?: T[]; has_more: boolean; first_id?: string; last_id?: string }
 
 // Module state: rebuilt from scratch after a reload.
 const cursors = new Map<string, string>() // session id -> newest event id read
@@ -97,6 +98,7 @@ async function listSessions($: EngineInterface): Promise<Session[]> {
   let after: string | undefined
   while (out.length < MAX_SESSIONS) {
     const page = await call<Page<Session>>($, 'list_sessions', { mine: true, limit: 50, ...(after ? { after_id: after } : {}) })
+    assert(!!page.data, 'list_sessions: page without data')
     out.push(...page.data)
     if (!page.has_more) break
     after = page.last_id
@@ -126,7 +128,7 @@ async function scanEvents($: EngineInterface, sid: string) {
     let after = last
     for (;;) {
       const page = await call<Page<any>>($, 'list_events', { ...base, after_id: after })
-      harvest(sid, page.data)
+      harvest(sid, page.data ?? [])
       if (page.last_id) after = page.last_id
       if (!page.has_more) break
     }
@@ -135,11 +137,11 @@ async function scanEvents($: EngineInterface, sid: string) {
   }
   let page = await call<Page<any>>($, 'list_events', base)
   if (page.last_id) cursors.set(sid, page.last_id)
-  harvest(sid, page.data)
-  for (let n = page.data.length; n < MAX_EVENTS && page.has_more; n += page.data.length) {
-    assert(page.data.length > 0, `list_events ${sid}: empty page with has_more`)
+  harvest(sid, page.data ?? [])
+  for (let n = 1; n < MAX_PAGES && page.has_more; n++) {
+    assert(!!page.first_id, `list_events ${sid}: has_more without first_id`)
     page = await call<Page<any>>($, 'list_events', { ...base, before_id: page.first_id })
-    harvest(sid, page.data)
+    harvest(sid, page.data ?? [])
   }
 }
 
@@ -331,7 +333,7 @@ async function boardText($: EngineInterface, view: string): Promise<string> {
   const others = list.filter(s => s.id !== sel).map(s => s.title).join(', ')
   return [
     head,
-    ...b.agents.map(a => `${'  '.repeat(a.depth)}- ${EMOJI[a.status] ?? '⚪'} ${a.depth === 0 ? '**MANAGER** ' : ''}${a.title} _(${a.status})_${a.summary ? ` — ${a.summary}` : ''}`),
+    ...b.agents.map(a => `${'  '.repeat(a.depth)}- ${EMOJI[a.status] ?? '⚪'} ${a.depth === 0 ? '**MANAGER** ' : ''}[${a.title.replace(/[[\]]/g, '')}](https://claude.ai/code/${a.id}) _(${a.status})_${a.summary ? ` — ${a.summary}` : ''}`),
     others ? `\nOther swarms: ${others}` : '',
   ].join('\n')
 }

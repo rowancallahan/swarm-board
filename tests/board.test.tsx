@@ -33,6 +33,7 @@ test('board shows manager first, workers nested, and messages', async ($, on) =>
     if (e.limit === undefined && e.args.limit > 20) return { value: { content: [{ type: 'text', text: 'Error: result (55,608 characters across 4 lines) exceeds maximum allowed tokens.' }], isError: true } }
     if (e.tool === 'list_sessions') return wrap({ data: sessions, has_more: false })
     if (e.tool === 'list_events') {
+      if (e.args.session_id === 'w2') return wrap({ has_more: false, first_id: 'a', last_id: 'b' })
       const data = e.args.session_id === 'm' ? sendFrom('w1', 'start task A') : e.args.session_id === 'w1' ? sendFrom('m', 'task A done') : []
       return wrap({ data, has_more: false, first_id: 'a', last_id: 'b' })
     }
@@ -86,6 +87,7 @@ test('with no surface, /swarm prints the board as text', async ($, on) => {
     if (e.limit === undefined && e.args.limit > 20) return { value: { content: [{ type: 'text', text: 'Error: result (55,608 characters across 4 lines) exceeds maximum allowed tokens.' }], isError: true } }
     if (e.tool === 'list_sessions') return wrap({ data: sessions, has_more: false })
     if (e.tool === 'list_events') {
+      if (e.args.session_id === 'w2') return wrap({ has_more: false, first_id: 'a', last_id: 'b' })
       const data = e.args.session_id === 'm' ? sendFrom('w1', 'start task A') : e.args.session_id === 'w1' ? sendFrom('m', 'task A done') : []
       return wrap({ data, has_more: false, first_id: 'a', last_id: 'b' })
     }
@@ -106,7 +108,7 @@ test('with no surface, /swarm prints the board as text', async ($, on) => {
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await clock.settle()
   const run = (args: string) => ($.command.run as (i: object) => Promise<{ text?: string }>)({ command: 'swarm', args })
-  expect((await run('')).text).toMatch(/MANAGER\*\* Lean align: MANAGER[\s\S]*worker two _\(failed\)_/)
+  expect((await run('')).text).toMatch(/MANAGER\*\* \[Lean align: MANAGER\]\(https:\/\/claude.ai\/code\/m\)[\s\S]*\[worker two\]\(https:\/\/claude.ai\/code\/w2\) _\(failed\)_/)
   expect((await run('msgs')).text).toMatch(/MANAGER → worker one\*\*: start task A/)
   expect((await run('perf')).text).toMatch(/\[plot: ir per commit\]\(https:\/\/github.com\/o\/proj\/blob\/main\/.swarm\/plots\/ir.svg\)/)
   expect((await run('tests')).text).toMatch(/Nothing posted yet/)
