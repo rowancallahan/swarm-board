@@ -1,0 +1,1 @@
+{ "name": "swarm-board", "version": "0.1.0", "description": "Pane showing a manager session, its worker tree, and the messages between them", "license": "MIT", "types": "./types/index.d.ts" }
