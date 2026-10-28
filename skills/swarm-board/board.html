@@ -108,7 +108,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
   </header>
   <div class="swarms" id="swarms" aria-label="Swarms"></div>
   <nav class="views" role="tablist" aria-label="Views">
-    <button class="view" role="tab" id="tab-agents" type="button" aria-selected="true">Agents</button>
+    <button class="view" role="tab" id="tab-manager" type="button" aria-selected="true">Manager</button>
+    <button class="view" role="tab" id="tab-agents" type="button" aria-selected="false">Agents <span class="n" id="n-agents"></span></button>
     <button class="view" role="tab" id="tab-board" type="button" aria-selected="false">Messages <span class="n" id="n-board"></span></button>
     <button class="view" role="tab" id="tab-perf" type="button" aria-selected="false">Performance</button>
     <button class="view" role="tab" id="tab-tests" type="button" aria-selected="false">Tests</button>
@@ -137,7 +138,7 @@ const PERM = "mcp:" + SERVER;
 const MAX_SESSIONS = 300, FIRST_PAGES = 60, REFRESH_MS = 90000;
 const S = {
   mcp: null, perms: null, live: false, snapAt: null, retried: false, sessions: new Map(), kids: new Map(), swarms: [], swarm: null, agent: null,
-  tab: "agents", filter: "all", msgs: new Map(), cursors: new Map(), fits: new Map(),
+  tab: "manager", filter: "all", msgs: new Map(), cursors: new Map(), fits: new Map(),
   manager: null, posts: { perf: null, tests: null }, pinned: null, updated: null, error: null, running: null, scanned: 0, toScan: 0, open: new Set(),
 };
 const $ = id => document.getElementById(id);
@@ -272,7 +273,7 @@ async function loadSnapshot() {
   S.sessions = new Map(); S.kids = new Map(); S.msgs = new Map();
   for (const a of snap.agents) {
     S.sessions.set(a.id, { id: a.id, title: a.title, status_bucket: "SESSION_STATUS_BUCKET_" + a.status.toUpperCase(), parent_session_id: a.parent ?? undefined,
-      updated_at: a.updated || snap.generatedAt, created_at: a.updated || snap.generatedAt, post_turn_summary: { recent_action: a.summary, needs_action: a.needs } });
+      updated_at: a.updated || snap.generatedAt, post_turn_summary: { recent_action: a.summary, needs_action: a.needs } });
     if (a.parent) S.kids.set(a.parent, [...(S.kids.get(a.parent) ?? []), a.id]);
   }
   for (const m of snap.messages) S.msgs.set(m.key, { id: m.key, at: m.at, from: m.from, to: m.to.startsWith("new: ") ? null : m.to, toTitle: m.to.replace(/^new: /, ""), text: m.text, kind: m.to.startsWith("new: ") ? "spawn" : "message" });
@@ -335,16 +336,16 @@ function renderSwarms() {
 
 function renderTree() {
   const ul = $("tree"); ul.replaceChildren();
-  const rows = treeIds(S.swarm);
-  $("count").textContent = rows.length ? `${rows.length - 1} workers` : "";
-  if (!rows.length) { ul.append(el("li", { class: "empty" }, S.running ? "Loading your sessions…" : "No manager sessions with workers found in your recent sessions.")); return; }
+  const rows = treeIds(S.swarm).slice(1).map(([id, d]) => [id, d - 1]);
+  $("count").textContent = rows.length ? `${rows.length} workers` : "";
+  if (!rows.length) { ul.append(el("li", { class: "empty" }, S.running ? "Loading your sessions…" : S.swarm ? "This manager has no workers." : "No board data yet.")); return; }
   for (const [id, d] of rows) {
     const s = S.sessions.get(id), st = bucket(s), sum = s.post_turn_summary;
     ul.append(el("li", {},
-      el("button", { class: `row s-${st}`, type: "button", style: `padding-left:${8 + d * 18}px`, "aria-current": String(id === S.agent), onclick: () => { S.agent = id; render(); } },
+      el("button", { class: `row s-${st}`, type: "button", style: `padding-left:${8 + d * 18}px`, "aria-current": String(id === (S.agent ?? rows[0][0])), onclick: () => { S.agent = id; render(); } },
         el("span", { class: "dot" }),
         el("span", { class: "t" },
-          el("span", { class: "name" }, d === 0 ? el("span", { class: "mgr" }, "MANAGER") : null, s.title || id),
+          el("span", { class: "name" }, s.title || id),
           sum?.needs_action ? el("span", { class: "sum", style: "color:var(--warn)" }, "Needs you: " + sum.needs_action) : sum?.recent_action ? el("span", { class: "sum" }, sum.recent_action) : null),
         el("span", { class: `pill s-${st}` }, st.replace("_", " ")))));
   }
@@ -378,31 +379,42 @@ function postView(k) {
 
 function renderDetail() {
   const main = $("detail"); main.replaceChildren();
-  const id = S.agent ?? S.swarm;
+  const id = S.agent ?? treeIds(S.swarm)[1]?.[0];
   if (!id || !S.sessions.has(id)) { main.append(el("div", { class: "empty" }, "Pick an agent on the left.")); return; }
+  main.append(...detailNodes(id));
+}
+
+function detailNodes(id) {
+  const main = { nodes: [], append(...n) { this.nodes.push(...n); } };
   const s = S.sessions.get(id), st = bucket(s), sum = s.post_turn_summary;
   const mine = swarmMsgs().filter(m => m.from === id || m.to === id);
   main.append(el("div", { class: "detail" },
     el("h3", {}, id === S.swarm ? el("span", { class: "mgr" }, "MANAGER") : null, s.title || id),
     el("div", { class: "meta" },
       el("span", { class: `pill s-${st}` }, st.replace("_", " ")),
-      el("span", {}, `started ${day(s.created_at)} ${hhmm(s.created_at)}`),
+      s.created_at ? el("span", {}, `started ${day(s.created_at)} ${hhmm(s.created_at)}`) : null,
       el("span", {}, `last active ${day(s.updated_at)} ${hhmm(s.updated_at)}`),
       el("a", { href: sessionUrl(id), target: "_blank", rel: "noopener" }, "Open session ↗")),
     sum?.needs_action ? el("div", { class: "need" }, el("b", {}, "Needs you: "), sum.needs_action) : null,
     sum?.recent_action ? el("div", {}, sum.recent_action) : null,
     s.task_summary ? el("div", { class: "sub" }, "Now: " + s.task_summary) : null));
   main.append(mine.length ? el("ul", { class: "msgs" }, mine.map(msgItem)) : el("div", { class: "empty" }, S.scanned < S.toScan ? "Reading transcripts…" : "No messages to or from this agent."));
+  return main.nodes;
 }
 
 function renderMain() {
-  for (const t of ["agents", "board", "perf", "tests"]) $("tab-" + t).setAttribute("aria-selected", String(S.tab === t));
+  for (const t of ["manager", "agents", "board", "perf", "tests"]) $("tab-" + t).setAttribute("aria-selected", String(S.tab === t));
   $("n-board").textContent = S.swarm ? swarmMsgs().length : "";
+  $("n-agents").textContent = S.swarm ? treeIds(S.swarm).length - 1 : "";
   $("view-agents").hidden = S.tab !== "agents";
   $("view-other").hidden = S.tab === "agents";
   if (S.tab === "agents") { renderDetail(); return; }
   const main = $("other"), f = $("filters"); main.replaceChildren(); f.replaceChildren();
-  $("other-title").textContent = { board: "Message board", perf: "Performance", tests: "Tests and CI" }[S.tab];
+  $("other-title").textContent = { manager: "Manager", board: "Message board", perf: "Performance", tests: "Tests and CI" }[S.tab];
+  if (S.tab === "manager") {
+    main.append(...(S.swarm && S.sessions.has(S.swarm) ? detailNodes(S.swarm) : [el("div", { class: "empty" }, S.running ? "Loading…" : "No manager loaded.")]));
+    return;
+  }
   if (S.tab === "board") {
     for (const [k, txt] of [["all", "All"], ["mgr-out", "From manager"], ["mgr-in", "To manager"]])
       f.append(el("button", { class: "chip", type: "button", "aria-pressed": String(S.filter === k), onclick: () => { S.filter = k; render(); } }, txt));
@@ -424,7 +436,7 @@ function render() {
   $("golive").hidden = !S.mcp || S.live;
 }
 
-for (const t of ["agents", "board", "perf", "tests"]) $("tab-" + t).addEventListener("click", () => { S.tab = t; render(); });
+for (const t of ["manager", "agents", "board", "perf", "tests"]) $("tab-" + t).addEventListener("click", () => { S.tab = t; render(); });
 $("refresh").addEventListener("click", () => refresh());
 $("golive").addEventListener("click", () => allow());
 
