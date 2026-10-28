@@ -1,0 +1,396 @@
+<title>Swarm Board</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a switchboard. Left rail = swarm picker + agent tree; right = selected agent or the message board. */
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --line: #dde1e8; --fg: #1b2230; --muted: #5d6779; --accent: #2f5bd3; --accent-ink: #ffffff;
+  --ok: #2c7a4b; --warn: #a86a00; --bad: #c0362c; --info: #2369a8; --idle: #7a8396;
+  --ok-bg: #e3f2e9; --warn-bg: #fbf0d9; --bad-bg: #fbe4e1; --info-bg: #e1edf8; --idle-bg: #eceef2;
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12151b; --panel: #1a1f28; --line: #2b3240; --fg: #e4e8ef; --muted: #98a2b3; --accent: #7d9bff; --accent-ink: #0d1220;
+  --ok: #6fcf97; --warn: #f2c14e; --bad: #ff7b6e; --info: #79b8ff; --idle: #8b95a7;
+  --ok-bg: #173324; --warn-bg: #3a2e12; --bad-bg: #3d1c19; --info-bg: #15293d; --idle-bg: #242a35; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12151b; --panel: #1a1f28; --line: #2b3240; --fg: #e4e8ef; --muted: #98a2b3; --accent: #7d9bff; --accent-ink: #0d1220;
+  --ok: #6fcf97; --warn: #f2c14e; --bad: #ff7b6e; --info: #79b8ff; --idle: #8b95a7;
+  --ok-bg: #173324; --warn-bg: #3a2e12; --bad-bg: #3d1c19; --info-bg: #15293d; --idle-bg: #242a35; color-scheme: dark }
+
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--f-body); font-size: 14px; line-height: 1.45; }
+.wrap { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 16px; display: flex; flex-direction: column; gap: 14px; max-width: 1280px; margin: 0 auto; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+h1 { font-family: var(--f-display); font-size: 20px; font-weight: 700; margin: 0; letter-spacing: 0.01em; }
+.sub { color: var(--muted); font-size: 12px; font-family: var(--f-mono); }
+.spacer { flex: 1; }
+button { font: inherit; color: inherit; cursor: pointer; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 5px 10px; font-size: 13px; }
+.btn:hover { border-color: var(--accent); }
+.btn:focus-visible, .row:focus-visible, .chip:focus-visible, .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.swarms { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 10px; font-size: 13px; display: inline-flex; gap: 6px; align-items: center; }
+.chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.chip .n { font-family: var(--f-mono); font-size: 11px; opacity: 0.8; }
+.banner { border: 1px solid var(--bad); background: var(--bad-bg); color: var(--fg); border-radius: 8px; padding: 10px 12px; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.banner b { color: var(--bad); }
+.grid { display: grid; grid-template-columns: minmax(280px, 420px) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 820px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; display: flex; flex-direction: column; }
+.panel > .head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.panel > .head h2 { font-family: var(--f-display); font-size: 14px; font-weight: 500; margin: 0; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.scroll { overflow-y: auto; max-height: calc(100vh - 210px); min-height: 200px; }
+@media (max-width: 820px) { .scroll { max-height: 60vh; } }
+.tree { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.row { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 8px; align-items: start; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 6px; padding: 6px 8px; }
+.row:hover { background: var(--bg); }
+.row[aria-current="true"] { border-color: var(--accent); background: var(--bg); }
+.dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; background: var(--idle); }
+.t { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.t .name { font-weight: 500; overflow-wrap: anywhere; }
+.t .sum { color: var(--muted); font-size: 12px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.mgr { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.08em; background: var(--accent); color: var(--accent-ink); border-radius: 4px; padding: 1px 5px; margin-right: 6px; vertical-align: 1px; }
+.pill { font-family: var(--f-mono); font-size: 11px; border-radius: 4px; padding: 1px 6px; white-space: nowrap; background: var(--idle-bg); color: var(--idle); }
+.s-working { --c: var(--ok); --cb: var(--ok-bg); } .s-blocked { --c: var(--warn); --cb: var(--warn-bg); } .s-failed { --c: var(--bad); --cb: var(--bad-bg); }
+.s-review_ready { --c: var(--info); --cb: var(--info-bg); } .s-completed, .s-idle, .s-unknown { --c: var(--idle); --cb: var(--idle-bg); }
+[class*="s-"] .dot, .dot[class*="s-"] { background: var(--c); }
+.pill[class*="s-"] { background: var(--cb); color: var(--c); }
+.s-working .dot { box-shadow: 0 0 0 3px var(--ok-bg); }
+.tabs { display: flex; gap: 4px; }
+.tab { border: none; background: none; padding: 4px 8px; border-radius: 6px; font-family: var(--f-display); font-size: 13px; font-weight: 500; color: var(--muted); }
+.tab[aria-selected="true"] { background: var(--bg); color: var(--fg); }
+.detail { padding: 14px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line); }
+.detail h3 { font-family: var(--f-display); font-size: 17px; margin: 0; text-wrap: balance; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 12px; font-family: var(--f-mono); align-items: center; }
+.meta a, .msg a, .links a { color: var(--accent); }
+.need { border-left: 3px solid var(--warn); background: var(--warn-bg); padding: 6px 10px; border-radius: 0 6px 6px 0; }
+.msgs { list-style: none; margin: 0; padding: 8px 12px; display: flex; flex-direction: column; gap: 10px; }
+.msg { display: flex; flex-direction: column; gap: 4px; padding-bottom: 10px; border-bottom: 1px dashed var(--line); min-width: 0; }
+.msg:last-child { border-bottom: none; }
+.msg .who { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: 13px; }
+.msg .who time { font-family: var(--f-mono); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.msg .who .from { font-weight: 600; } .msg .who .arrow { color: var(--muted); }
+.msg .who .kind { font-family: var(--f-mono); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.msg pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--f-body); font-size: 13px; }
+.msg .more { align-self: flex-start; border: none; background: none; color: var(--accent); padding: 0; font-size: 12px; }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.empty { color: var(--muted); padding: 16px 14px; }
+.links { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.links code { font-family: var(--f-mono); font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+.md { min-width: 0; overflow-wrap: anywhere; } .md img { display: block; max-width: 100%; height: auto; background: #fff; border-radius: 6px; border: 1px solid var(--line); }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; font-variant-numeric: tabular-nums; } .md th, .md td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+.md code { font-family: var(--f-mono); font-size: 12px; } .md h1, .md h2 { font-family: var(--f-display); font-size: 16px; margin: 10px 0 4px; }
+.links h3 { font-family: var(--f-display); font-size: 15px; margin: 6px 0 0; }
+.progress { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { .s-working .dot { animation: pulse 2s ease-in-out infinite; } }
+@keyframes pulse { 50% { box-shadow: 0 0 0 5px transparent; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Swarm Board</h1>
+    <span class="sub" id="updated">connecting…</span>
+    <span class="progress" id="progress"></span>
+    <span class="spacer"></span>
+    <button class="btn" id="refresh" type="button">Refresh</button>
+  </header>
+  <div class="swarms" id="swarms" aria-label="Swarms"></div>
+  <div id="banner"></div>
+  <div class="grid">
+    <section class="panel" aria-label="Agents">
+      <div class="head"><h2>Agents</h2><span class="spacer"></span><span class="sub" id="count"></span></div>
+      <ul class="tree scroll" id="tree"><li class="empty">Loading your sessions…</li></ul>
+    </section>
+    <section class="panel" aria-label="Detail">
+      <div class="head">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" id="tab-agent" type="button" aria-selected="true">Agent</button>
+          <button class="tab" role="tab" id="tab-board" type="button" aria-selected="false">Message board</button>
+          <button class="tab" role="tab" id="tab-posts" type="button" aria-selected="false">Perf &amp; tests</button>
+        </div>
+        <span class="spacer"></span>
+        <div class="filters" id="filters"></div>
+      </div>
+      <div class="scroll" id="main"><div class="empty">Pick an agent on the left.</div></div>
+    </section>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<script>
+const SERVER = "Claude Code Remote";
+const MAX_SESSIONS = 300, FIRST_PAGES = 60, REFRESH_MS = 90000;
+const S = {
+  mcp: null, sessions: new Map(), kids: new Map(), swarms: [], swarm: null, agent: null,
+  tab: "agent", filter: "all", msgs: new Map(), cursors: new Map(), fits: new Map(),
+  manager: null, posts: { perf: null, tests: null }, pinned: null, updated: null, error: null, running: null, scanned: 0, toScan: 0, open: new Set(),
+};
+const $ = id => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c !== null && c !== undefined && c !== false) n.append(c.nodeType ? c : String(c));
+  return n;
+};
+const bucket = s => (s?.status_bucket || "unknown").replace("SESSION_STATUS_BUCKET_", "").toLowerCase();
+const hhmm = iso => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const day = iso => new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
+const sessionUrl = id => `https://claude.ai/code/${id}`;
+const title = id => S.sessions.get(id)?.title || id;
+const label = id => id === S.swarm ? "Manager" : title(id);
+
+// One tool call; the payload is the session API's {ccr: ...} JSON, sometimes as text.
+async function call(tool, input) {
+  if (typeof input.limit === "number" && S.fits.has(tool)) input = { ...input, limit: Math.min(input.limit, S.fits.get(tool)) };
+  const res = await S.mcp.callTool(SERVER, tool, input, { cache: false });
+  let p = res.payload;
+  if (typeof p === "string") {
+    if (p.includes("exceeds maximum allowed tokens") && input.limit > 1) {
+      S.fits.set(tool, Math.floor(input.limit / 2));
+      return call(tool, input);
+    }
+    const i = p.indexOf('{"ccr"'), j = p.lastIndexOf("}");
+    if (i < 0 || j < i) throw Object.assign(new Error(`${tool}: unexpected reply: ${p.slice(0, 200)}`), { code: "bad_reply" });
+    p = JSON.parse(p.slice(i, j + 1));
+  }
+  if (!p || typeof p !== "object") throw Object.assign(new Error(`${tool}: empty reply`), { code: "bad_reply" });
+  return p.ccr ?? p;
+}
+
+async function loadSessions() {
+  const out = [];
+  let after;
+  while (out.length < MAX_SESSIONS) {
+    const page = await call("list_sessions", { mine: true, limit: 50, ...(after ? { after_id: after } : {}) });
+    out.push(...(page.data ?? []));
+    if (!page.has_more) break;
+    after = page.last_id;
+  }
+  S.kids = new Map();
+  for (const s of out) {
+    S.sessions.set(s.id, s);
+    if (s.parent_session_id) S.kids.set(s.parent_session_id, [...(S.kids.get(s.parent_session_id) ?? []), s.id]);
+  }
+  const roots = [...S.kids.keys()].filter(id => !S.sessions.get(id)?.parent_session_id);
+  for (const id of roots) if (!S.sessions.has(id)) S.sessions.set(id, await call("get_session", { session_id: id }));
+  S.swarms = roots.map(id => S.sessions.get(id)).sort((a, b) => b.updated_at.localeCompare(a.updated_at)).map(s => s.id);
+  if (S.pinned) {
+    if (!S.sessions.has(S.pinned)) S.sessions.set(S.pinned, await call("get_session", { session_id: S.pinned }));
+    S.swarm = S.pinned;
+  } else if (!S.swarms.includes(S.swarm)) S.swarm = S.swarms[0] ?? null;
+}
+
+const treeIds = root => { const out = []; const walk = (id, d) => { out.push([id, d]); for (const k of S.kids.get(id) ?? []) walk(k, d + 1); }; if (root) walk(root, 0); return out; };
+
+function harvest(sid, events) {
+  for (const ev of events ?? []) {
+    const a = ev.assistant; if (!a) continue;
+    for (const b of (a.internal_anthropic_catchall ?? a).message?.content ?? []) {
+      if (b.type !== "tool_use" || S.msgs.has(b.id)) continue;
+      if (b.name.endsWith("__send_message")) S.msgs.set(b.id, { id: b.id, at: ev.created_at, from: sid, to: b.input?.session_id ?? "?", text: b.input?.message ?? "", kind: "message" });
+      else if (b.name.endsWith("__create_session")) S.msgs.set(b.id, { id: b.id, at: ev.created_at, from: sid, to: null, toTitle: b.input?.title ?? "new session", text: b.input?.prompt ?? "", kind: "spawn" });
+    }
+  }
+}
+
+async function scan(sid) {
+  const base = { session_id: sid, kinds: ["assistant"], limit: 25 };
+  let last = S.cursors.get(sid);
+  if (last) {
+    for (;;) {
+      const page = await call("list_events", { ...base, after_id: last });
+      harvest(sid, page.data);
+      if (page.last_id) last = page.last_id;
+      if (!page.has_more) break;
+    }
+    S.cursors.set(sid, last);
+    return;
+  }
+  let page = await call("list_events", base);
+  if (page.last_id) S.cursors.set(sid, page.last_id);
+  harvest(sid, page.data);
+  for (let n = 1; n < FIRST_PAGES && page.has_more && page.first_id; n++) {
+    page = await call("list_events", { ...base, before_id: page.first_id });
+    harvest(sid, page.data);
+    if (n % 5 === 0) render();
+  }
+}
+
+// posts/perf.md and posts/tests.md are files the manager publishes into this artifact.
+async function loadPosts() {
+  for (const k of ["perf", "tests"]) {
+    const r = await fetch(`posts/${k}.md`, { cache: "no-store" });
+    S.posts[k] = r.ok ? await r.text() : null;
+  }
+}
+function mdNode(text) {
+  const box = el("div", { class: "md" });
+  box.innerHTML = DOMPurify.sanitize(marked.parse(text));
+  for (const img of box.querySelectorAll("img")) {
+    const src = img.getAttribute("src") || "";
+    if (!/^(https?:|data:|\/)/.test(src)) img.setAttribute("src", "posts/" + src.replace(/^\.\//, ""));
+  }
+  for (const a of box.querySelectorAll("a")) { a.target = "_blank"; a.rel = "noopener"; }
+  return box;
+}
+
+async function refreshOnce() {
+  await loadPosts();
+  await loadSessions();
+  render();
+  if (!S.swarm) return;
+  S.manager = await call("get_session", { session_id: S.swarm });
+  const ids = treeIds(S.swarm).map(([id]) => id).reverse(); // workers first, the long manager transcript last
+  S.toScan = ids.length; S.scanned = 0; render();
+  for (const id of ids) { await scan(id); S.scanned++; render(); }
+  S.updated = new Date();
+}
+function refresh() {
+  S.running ??= refreshOnce()
+    .then(() => { S.error = null; })
+    .catch(err => { S.error = err; })
+    .finally(() => { S.running = null; render(); });
+  return S.running;
+}
+
+function errorBanner() {
+  const e = S.error; if (!e) return null;
+  const fix = {
+    server_not_connected: `Add or turn on the "${SERVER}" connector in claude.ai Settings → Connectors, then refresh.`,
+    needs_reauth: `Reconnect "${SERVER}" in claude.ai Settings → Connectors.`,
+    not_in_manifest: "This page was not allowed to use your sessions. Open the page's permissions and allow it.",
+    approval_required: "This page needs your approval to read your sessions.",
+    not_granted: "This view does not allow connector access. Open the page on claude.ai.",
+    server_unavailable: "The session service did not answer. Try again in a moment.",
+  }[e.code] ?? "Reading your sessions failed.";
+  return el("div", { class: "banner", role: "alert" },
+    el("b", {}, e.code ?? "error"), el("span", {}, fix), el("span", { class: "sub" }, String(e.message ?? e).slice(0, 300)),
+    el("button", { class: "btn primary", type: "button", onclick: () => refresh() }, e.code === "approval_required" ? "Allow and retry" : "Retry"));
+}
+
+function renderSwarms() {
+  const box = $("swarms"); box.replaceChildren();
+  if (S.pinned) return;
+  for (const id of S.swarms) {
+    const s = S.sessions.get(id);
+    box.append(el("button", { class: "chip", type: "button", "aria-pressed": String(id === S.swarm), onclick: () => { S.swarm = id; S.agent = null; S.cursors = new Map(); refresh(); render(); } },
+      s.title || id, el("span", { class: "n" }, `${treeIds(id).length - 1}w`)));
+  }
+}
+
+function renderTree() {
+  const ul = $("tree"); ul.replaceChildren();
+  const rows = treeIds(S.swarm);
+  $("count").textContent = rows.length ? `${rows.length - 1} workers` : "";
+  if (!rows.length) { ul.append(el("li", { class: "empty" }, S.running ? "Loading your sessions…" : "No manager sessions with workers found in your recent sessions.")); return; }
+  for (const [id, d] of rows) {
+    const s = S.sessions.get(id), st = bucket(s), sum = s.post_turn_summary;
+    ul.append(el("li", {},
+      el("button", { class: `row s-${st}`, type: "button", style: `padding-left:${8 + d * 18}px`, "aria-current": String(id === S.agent), onclick: () => { S.agent = id; S.tab = "agent"; render(); } },
+        el("span", { class: "dot" }),
+        el("span", { class: "t" },
+          el("span", { class: "name" }, d === 0 ? el("span", { class: "mgr" }, "MANAGER") : null, s.title || id),
+          sum?.needs_action ? el("span", { class: "sum", style: "color:var(--warn)" }, "Needs you: " + sum.needs_action) : sum?.recent_action ? el("span", { class: "sum" }, sum.recent_action) : null),
+        el("span", { class: `pill s-${st}` }, st.replace("_", " ")))));
+  }
+}
+
+function msgItem(m) {
+  const long = m.text.length > 600, open = S.open.has(m.id);
+  return el("li", { class: "msg" },
+    el("div", { class: "who" },
+      el("time", { datetime: m.at, title: m.at }, `${day(m.at)} ${hhmm(m.at)}`),
+      el("span", { class: "from" }, label(m.from)), el("span", { class: "arrow" }, "→"),
+      el("span", {}, m.to ? label(m.to) : m.toTitle), el("span", { class: "kind" }, m.kind === "spawn" ? "task prompt" : "")),
+    el("pre", {}, long && !open ? m.text.slice(0, 600) + "…" : m.text),
+    long ? el("button", { class: "more", type: "button", onclick: () => { open ? S.open.delete(m.id) : S.open.add(m.id); render(); } }, open ? "Show less" : "Show all") : null);
+}
+
+function swarmMsgs() {
+  const ids = new Set(treeIds(S.swarm).map(([id]) => id));
+  return [...S.msgs.values()].filter(m => ids.has(m.from)).sort((a, b) => a.at.localeCompare(b.at));
+}
+
+function renderMain() {
+  for (const t of ["agent", "board", "posts"]) $("tab-" + t).setAttribute("aria-selected", String(S.tab === t));
+  const main = $("main"), f = $("filters"); main.replaceChildren(); f.replaceChildren();
+  if (S.tab === "board") {
+    for (const [k, txt] of [["all", "All"], ["mgr-out", "From manager"], ["mgr-in", "To manager"]])
+      f.append(el("button", { class: "chip", type: "button", "aria-pressed": String(S.filter === k), onclick: () => { S.filter = k; render(); } }, txt));
+    let ms = swarmMsgs();
+    if (S.filter === "mgr-out") ms = ms.filter(m => m.from === S.swarm);
+    if (S.filter === "mgr-in") ms = ms.filter(m => m.to === S.swarm);
+    main.append(ms.length ? el("ul", { class: "msgs" }, ms.map(msgItem)) : el("div", { class: "empty" }, S.scanned < S.toScan ? "Reading transcripts…" : "No messages between these sessions yet."));
+    return;
+  }
+  if (S.tab === "posts") {
+    if (S.posts.perf || S.posts.tests) {
+      const box = el("div", { class: "links" });
+      if (S.posts.perf) box.append(el("h3", {}, "Performance"), mdNode(S.posts.perf));
+      if (S.posts.tests) box.append(el("h3", {}, "Tests and CI"), mdNode(S.posts.tests));
+      main.append(box);
+      return;
+    }
+    const git = S.manager?.session_context?.outcomes?.[0]?.git_repository?.git_info;
+    const branch = git?.branches?.[0];
+    if (!git || !branch) { main.append(el("div", { class: "empty" }, S.manager ? "The manager session has no repo branch." : "Loading the manager session…")); return; }
+    const blob = p => `https://github.com/${git.repo}/blob/${branch}/${p}`;
+    main.append(el("div", { class: "links" },
+      el("div", {}, "Agents post performance and CI results to two files on the manager's branch ", el("code", {}, `${git.repo}@${branch}`), ":"),
+      el("div", {}, el("a", { href: blob(".swarm/perf.md"), target: "_blank", rel: "noopener" }, "Performance: .swarm/perf.md ↗")),
+      el("div", {}, el("a", { href: blob(".swarm/tests.md"), target: "_blank", rel: "noopener" }, "Tests and CI: .swarm/tests.md ↗")),
+      el("div", { class: "sub" }, "Nothing posted to this page yet. Ask the manager to post an update with the swarm-board skill: it publishes posts/perf.md, posts/tests.md and SVG plots into this page.")));
+    return;
+  }
+  const id = S.agent ?? S.swarm;
+  if (!id) { main.append(el("div", { class: "empty" }, "Pick an agent on the left.")); return; }
+  const s = S.sessions.get(id), st = bucket(s), sum = s.post_turn_summary;
+  const mine = swarmMsgs().filter(m => m.from === id || m.to === id);
+  main.append(el("div", { class: "detail" },
+    el("h3", {}, id === S.swarm ? el("span", { class: "mgr" }, "MANAGER") : null, s.title || id),
+    el("div", { class: "meta" },
+      el("span", { class: `pill s-${st}` }, st.replace("_", " ")),
+      el("span", {}, `started ${day(s.created_at)} ${hhmm(s.created_at)}`),
+      el("span", {}, `last active ${day(s.updated_at)} ${hhmm(s.updated_at)}`),
+      el("a", { href: sessionUrl(id), target: "_blank", rel: "noopener" }, "Open session ↗")),
+    sum?.needs_action ? el("div", { class: "need" }, el("b", {}, "Needs you: "), sum.needs_action) : null,
+    sum?.recent_action ? el("div", {}, sum.recent_action) : null,
+    s.task_summary ? el("div", { class: "sub" }, "Now: " + s.task_summary) : null));
+  main.append(mine.length ? el("ul", { class: "msgs" }, mine.map(msgItem)) : el("div", { class: "empty" }, S.scanned < S.toScan ? "Reading transcripts…" : "No messages to or from this agent."));
+}
+
+function render() {
+  renderSwarms(); renderTree(); renderMain();
+  const b = $("banner"); b.replaceChildren(); const e = errorBanner(); if (e) b.append(e);
+  $("updated").textContent = S.updated ? `updated ${hhmm(S.updated.toISOString())}` : S.running ? "loading…" : "not loaded";
+  $("progress").textContent = S.running && S.toScan ? `reading transcripts ${S.scanned}/${S.toScan}` : "";
+  $("refresh").disabled = !!S.running;
+}
+
+for (const t of ["agent", "board", "posts"]) $("tab-" + t).addEventListener("click", () => { S.tab = t; render(); });
+$("refresh").addEventListener("click", () => refresh());
+
+(async () => {
+  const m = location.hash.match(/^#m-([A-Za-z0-9]+)$/);
+  if (m) S.pinned = "session_" + m[1];
+  render();
+  S.mcp = await window.claude?.use?.("mcp") ?? null;
+  if (!S.mcp) {
+    S.error = { code: "not_granted", message: "Connector access is not available in this view." };
+    $("tree").replaceChildren(el("li", { class: "empty" }, "Open this page on claude.ai to see your sessions."));
+    render();
+    return;
+  }
+  await refresh();
+  setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
+})();
+</script>

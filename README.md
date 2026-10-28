@@ -21,6 +21,10 @@ Requires the `claude-code-remote` MCP server, which cloud sessions have.
 
 Limits: scans your 300 most recent sessions; the first scan of a transcript reads up to 2000 assistant events, so older messages in a very long manager transcript are missing.
 
+## Web board (claude.ai page)
+
+The plugin also ships a `swarm-board` skill. In a manager session, ask for "the swarm board": the manager publishes `skills/swarm-board/board.html` as a private claude.ai page pinned to itself (`<url>#m-<session id without session_>`). The page reads your sessions live through the Claude Code Remote connector: worker tree with status, click an agent for its summary, messages and a link to its session, and a merged message board. To post perf and CI results, the manager publishes `posts/perf.md`, `posts/tests.md` and `posts/plots/*.svg` into the page (steps in the skill).
+
 ## Install
 
 ```
