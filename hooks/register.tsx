@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderInput } from 'claude-code'
 
 import type { Agent, Board, Msg, Part, Posts, Swarm } from '../types'
 
@@ -196,6 +196,99 @@ const GLYPH: Record<string, [string, string]> = {
 }
 const hhmm = (iso: string) => iso.slice(11, 16)
 
+// One board, drawn in the side pane and inline under /swarm's output row.
+const draw = async ($: EngineInterface, e: RenderInput<'Pane' | 'CommandOutput'>) => {
+  const ui = $.ui.resolve(e)
+  const { Box, Text, Button, Markdown } = ui
+  const p = await read($, posts)
+  const drawParts = (parts: Part[], file: string) => (
+    <Box flexDirection="column" gap={1}>
+      <Text dimColor>{p.where ? `${p.where} · .swarm/${file}` : 'loading…'}</Text>
+      {p.where && parts.length === 0 && <Text dimColor>{`Nothing posted yet. Agents commit .swarm/${file} (markdown; SVG plots as ![alt](plots/x.svg)) to the manager's branch.`}</Text>}
+      {parts.map((part, i) =>
+        part.kind === 'md' ? (
+          <Markdown key={`p-${file}-${i}`} text={part.text} />
+        ) : e.surface !== 'terminal' && 'Svg' in ui ? (
+          <ui.Svg source={part.source} alt={part.alt} />
+        ) : (
+          <Text dimColor>[plot: {part.alt} — open in the desktop or web app]</Text>
+        ),
+      )}
+    </Box>
+  )
+  const list = await read($, swarms)
+  const sel = await read($, selected)
+  const view = await read($, tab)
+  const b = await read($, board)
+  const rows = Math.max(6, (e.viewport?.rows ?? 30) - 8)
+  const name = new Map(b.agents.map(a => [a.id, a.depth === 0 ? 'MANAGER' : a.title]))
+  const pick = (id: string) => () => {
+    void update($, selected, () => id)
+    void update($, board, () => ({ agents: [], messages: [], updatedAt: '' }))
+    void update($, posts, () => ({ where: '', perf: [], tests: [] }))
+    void refresh($)
+  }
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+        {list.slice(0, 8).map(s => (
+          <Button key={`s-${s.id}`} variant={s.id === sel ? 'primary' : 'secondary'} onPress={pick(s.id)}>
+            {s.title} <Text dimColor>{s.workers}w</Text>
+          </Button>
+        ))}
+        {list.length === 0 && <Text dimColor>{b.updatedAt ? 'No sessions with workers found.' : 'Loading…'}</Text>}
+      </Box>
+      <Box flexDirection="row" columnGap={1}>
+        <Button key="t-agents" variant={view === 'agents' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'agents')}>
+          Agents {b.agents.length}
+        </Button>
+        <Button key="t-msgs" variant={view === 'messages' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'messages')}>
+          Messages {b.messages.length}
+        </Button>
+        <Button key="t-perf" variant={view === 'perf' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'perf')}>
+          Perf
+        </Button>
+        <Button key="t-tests" variant={view === 'tests' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'tests')}>
+          Tests
+        </Button>
+        <Button key="refresh" plain onPress={() => void refresh($)}>↻</Button>
+        <Text dimColor>{b.updatedAt ? `updated ${hhmm(b.updatedAt)}Z` : 'loading…'}</Text>
+      </Box>
+      {view === 'perf' ? drawParts(p.perf, 'perf.md') : view === 'tests' ? drawParts(p.tests, 'tests.md') : view === 'agents' ? (
+        <Box flexDirection="column">
+          {b.agents.map(a => {
+            const [g, c] = GLYPH[a.status] ?? ['○', 'gray']
+            return (
+              <Box key={`a-${a.id}`} flexDirection="column" paddingLeft={a.depth * 2} marginBottom={a.depth === 0 ? 1 : 0}>
+                <Text wrap="truncate-end">
+                  <Text color={c}>{g}</Text> {a.depth === 0 ? <Text bold color="magenta">MANAGER </Text> : ''}
+                  <Text bold={a.depth === 0}>{a.title}</Text> <Text dimColor>{a.status}</Text>
+                </Text>
+                {a.summary !== '' && <Text dimColor wrap="truncate-end">  {a.summary}</Text>}
+              </Box>
+            )
+          })}
+        </Box>
+      ) : (
+        <Box flexDirection="column" gap={1}>
+          {b.messages.length === 0 && <Text dimColor>No messages between these sessions yet.</Text>}
+          {b.messages.slice(-Math.floor(rows / 3)).map(m => (
+            <Box key={`m-${m.key}`} flexDirection="column">
+              <Text wrap="truncate-end">
+                <Text dimColor>{hhmm(m.at)}</Text> <Text bold color={name.get(m.from) === 'MANAGER' ? 'magenta' : 'cyan'}>{name.get(m.from) ?? m.from}</Text>
+                {' → '}
+                <Text bold>{name.get(m.to) ?? m.to}</Text>
+              </Text>
+              <Text>{m.text.length > 400 ? `${m.text.slice(0, 400)}…` : m.text}</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
+    </Box>
+  )
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'swarm', description: 'Open the swarm board (manager, workers, messages)' })
@@ -206,100 +299,11 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'swarm' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'Swarm' })
+    const opened = await $.ui.open({ id: PANE, title: 'Swarm' })
     void refresh($)
-    return { text: 'Swarm board opened.' }
+    return { text: opened.isPlaced ? 'Swarm board opened in the side pane.' : `Side pane not shown here (${opened.reason}); board drawn below.` }
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const ui = $.ui.resolve(e)
-    const { Box, Text, Button, Markdown } = ui
-    const p = await read($, posts)
-    const drawParts = (parts: Part[], file: string) => (
-      <Box flexDirection="column" gap={1}>
-        <Text dimColor>{p.where ? `${p.where} · .swarm/${file}` : 'loading…'}</Text>
-        {p.where && parts.length === 0 && <Text dimColor>{`Nothing posted yet. Agents commit .swarm/${file} (markdown; SVG plots as ![alt](plots/x.svg)) to the manager's branch.`}</Text>}
-        {parts.map((part, i) =>
-          part.kind === 'md' ? (
-            <Markdown key={`p-${file}-${i}`} text={part.text} />
-          ) : e.surface !== 'terminal' && 'Svg' in ui ? (
-            <ui.Svg source={part.source} alt={part.alt} />
-          ) : (
-            <Text dimColor>[plot: {part.alt} — open in the desktop or web app]</Text>
-          ),
-        )}
-      </Box>
-    )
-    const list = await read($, swarms)
-    const sel = await read($, selected)
-    const view = await read($, tab)
-    const b = await read($, board)
-    const rows = Math.max(6, (e.viewport?.rows ?? 30) - 8)
-    const name = new Map(b.agents.map(a => [a.id, a.depth === 0 ? 'MANAGER' : a.title]))
-    const pick = (id: string) => () => {
-      void update($, selected, () => id)
-      void update($, board, () => ({ agents: [], messages: [], updatedAt: '' }))
-      void update($, posts, () => ({ where: '', perf: [], tests: [] }))
-      void refresh($)
-    }
-
-    return (
-      <Box flexDirection="column" gap={1}>
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-          {list.slice(0, 8).map(s => (
-            <Button key={`s-${s.id}`} variant={s.id === sel ? 'primary' : 'secondary'} onPress={pick(s.id)}>
-              {s.title} <Text dimColor>{s.workers}w</Text>
-            </Button>
-          ))}
-          {list.length === 0 && <Text dimColor>{b.updatedAt ? 'No sessions with workers found.' : 'Loading…'}</Text>}
-        </Box>
-        <Box flexDirection="row" columnGap={1}>
-          <Button key="t-agents" variant={view === 'agents' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'agents')}>
-            Agents {b.agents.length}
-          </Button>
-          <Button key="t-msgs" variant={view === 'messages' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'messages')}>
-            Messages {b.messages.length}
-          </Button>
-          <Button key="t-perf" variant={view === 'perf' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'perf')}>
-            Perf
-          </Button>
-          <Button key="t-tests" variant={view === 'tests' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'tests')}>
-            Tests
-          </Button>
-          <Button key="refresh" plain onPress={() => void refresh($)}>↻</Button>
-          <Text dimColor>{b.updatedAt ? `updated ${hhmm(b.updatedAt)}Z` : 'loading…'}</Text>
-        </Box>
-        {view === 'perf' ? drawParts(p.perf, 'perf.md') : view === 'tests' ? drawParts(p.tests, 'tests.md') : view === 'agents' ? (
-          <Box flexDirection="column">
-            {b.agents.map(a => {
-              const [g, c] = GLYPH[a.status] ?? ['○', 'gray']
-              return (
-                <Box key={`a-${a.id}`} flexDirection="column" paddingLeft={a.depth * 2} marginBottom={a.depth === 0 ? 1 : 0}>
-                  <Text wrap="truncate-end">
-                    <Text color={c}>{g}</Text> {a.depth === 0 ? <Text bold color="magenta">MANAGER </Text> : ''}
-                    <Text bold={a.depth === 0}>{a.title}</Text> <Text dimColor>{a.status}</Text>
-                  </Text>
-                  {a.summary !== '' && <Text dimColor wrap="truncate-end">  {a.summary}</Text>}
-                </Box>
-              )
-            })}
-          </Box>
-        ) : (
-          <Box flexDirection="column" gap={1}>
-            {b.messages.length === 0 && <Text dimColor>No messages between these sessions yet.</Text>}
-            {b.messages.slice(-Math.floor(rows / 3)).map(m => (
-              <Box key={`m-${m.key}`} flexDirection="column">
-                <Text wrap="truncate-end">
-                  <Text dimColor>{hhmm(m.at)}</Text> <Text bold color={name.get(m.from) === 'MANAGER' ? 'magenta' : 'cyan'}>{name.get(m.from) ?? m.from}</Text>
-                  {' → '}
-                  <Text bold>{name.get(m.to) ?? m.to}</Text>
-                </Text>
-                <Text>{m.text.length > 400 ? `${m.text.slice(0, 400)}…` : m.text}</Text>
-              </Box>
-            ))}
-          </Box>
-        )}
-      </Box>
-    )
-  })
+  on('ui.render', { component: 'Pane', requestId: PANE }, draw)
+  on('ui.render', { component: 'CommandOutput', props: { command: 'swarm' } }, draw)
 }

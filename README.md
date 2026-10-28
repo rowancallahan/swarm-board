@@ -15,7 +15,7 @@ Snippet for the manager's instructions:
 
 > Keep `.swarm/perf.md` (performance per commit, plots as SVG under `.swarm/plots/`, linked as `![caption](plots/name.svg)` on their own line) and `.swarm/tests.md` (which CI checks ran for each branch/commit and their result) up to date on your branch. Newest first.
 
-Refreshes every 90 s, or when you press ↻. `/swarm` reopens the pane.
+Refreshes every 90 s, or when you press ↻. `/swarm` reopens the pane; where the app does not place side panes, `/swarm` also draws the live board inline under its row in the chat.
 
 Requires the `claude-code-remote` MCP server, which cloud sessions have.
 

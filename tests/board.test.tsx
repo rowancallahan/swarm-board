@@ -69,4 +69,9 @@ test('board shows manager first, workers nested, and messages', async ($, on) =>
     await ui.press({ key: 't-agents' })
     await ui.unmount()
   }
+  for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
+    const ui = await $.ui.mount({ plugin: 'swarm-board', component: 'CommandOutput', requestId: 'row', props: { command: 'swarm', args: '', text: 'x', isErrored: false }, surface })
+    await need(ui, { type: 'Text', text: /MANAGER/ }, `inline ${surface}`)
+    await ui.unmount()
+  }
 })
