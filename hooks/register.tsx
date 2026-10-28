@@ -31,7 +31,8 @@ type Page<T> = { data: T[]; has_more: boolean; first_id?: string; last_id?: stri
 // Module state: rebuilt from scratch after a reload.
 const cursors = new Map<string, string>() // session id -> newest event id read
 const seen = new Map<string, Msg>() // tool_use id -> message
-let busy = false
+let running: Promise<void> | null = null // the refresh in flight, shared by every caller
+let lastError = '' // shown in the board until a refresh succeeds
 
 // Page size per tool that last fit in one tool result.
 const fits = new Map<string, number>()
@@ -142,10 +143,19 @@ async function scanEvents($: EngineInterface, sid: string) {
   }
 }
 
-async function refresh($: EngineInterface) {
-  if (busy) return
-  busy = true
-  try {
+function refresh($: EngineInterface): Promise<void> {
+  running ??= refreshOnce($)
+    .then(() => { lastError = '' })
+    .catch((err: unknown) => {
+      lastError = String(err)
+      throw err
+    })
+    .finally(() => { running = null })
+  return running
+}
+
+async function refreshOnce($: EngineInterface) {
+  {
     const sessions = await listSessions($)
     const kids = new Map<string, Session[]>()
     for (const s of sessions) if (s.parent_session_id) kids.set(s.parent_session_id, [...(kids.get(s.parent_session_id) ?? []), s])
@@ -176,6 +186,8 @@ async function refresh($: EngineInterface) {
     walk(byId.get(sel)!, 0)
     assert(agents[0]!.depth === 0, 'manager must be first')
 
+    // Show the tree before the (slow, first-time) transcript scans.
+    await update($, board, old => ({ ...old, agents, updatedAt: new Date().toISOString() }))
     for (const a of agents) await scanEvents($, a.id)
     const ids = new Set(agents.map(a => a.id))
     const messages = [...seen.values()].filter(m => ids.has(m.from)).sort((x, y) => x.at.localeCompare(y.at))
@@ -189,8 +201,6 @@ async function refresh($: EngineInterface) {
     const perf = await postFile($, git.repo, branch, '.swarm/perf.md')
     const tests = await postFile($, git.repo, branch, '.swarm/tests.md')
     await update($, posts, () => ({ where: `${git.repo}@${branch}`, perf, tests }))
-  } finally {
-    busy = false
   }
 }
 
@@ -309,7 +319,8 @@ async function boardText($: EngineInterface, view: string): Promise<string> {
   const list = await read($, swarms)
   const sel = await read($, selected)
   const name = new Map(b.agents.map(a => [a.id, a.depth === 0 ? 'MANAGER' : a.title]))
-  const head = `**${list.find(s => s.id === sel)?.title ?? 'no swarm found'}** · updated ${b.updatedAt ? hhmm(b.updatedAt) + 'Z' : 'never'} · \`/swarm agents|msgs|perf|tests\``
+  const warn = lastError ? `\n⚠️ last refresh failed: ${lastError.slice(0, 500)}` : ''
+  const head = `**${list.find(s => s.id === sel)?.title ?? 'no swarm found'}** · updated ${b.updatedAt ? hhmm(b.updatedAt) + 'Z' : 'never'} · \`/swarm agents|msgs|perf|tests\`${warn}`
   const parts = (ps: Part[], file: string) =>
     ps.length === 0 ? `_Nothing posted yet in ${p.where} .swarm/${file}._` : ps.map(x => (x.kind === 'md' ? x.text : `[plot: ${x.alt}](${x.url})`)).join('\n\n')
   if (view === 'msgs')
@@ -341,7 +352,9 @@ export const register: Register = on => {
       return { text: 'Swarm board opened in the side pane.' }
     }
     // No surface draws plugin elements here (e.g. a cloud session): print the board as markdown.
-    await refresh($)
+    // Wait up to 20 s; a first scan of a long manager transcript takes longer, and the
+    // board then shows what it has so far. A failure shows in the text as lastError.
+    await Promise.race([refresh($).catch(() => undefined), $.clock.sleep(20_000)])
     return { text: await boardText($, e.args.trim()) }
   })
 

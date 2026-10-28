@@ -19,7 +19,7 @@ Refreshes every 90 s, or when you press ↻. `/swarm` reopens the pane; where th
 
 Requires the `claude-code-remote` MCP server, which cloud sessions have.
 
-Limits: scans your 300 most recent sessions; the first scan of a transcript reads up to 4000 assistant events, so older messages in a very long manager transcript are missing.
+Limits: scans your 300 most recent sessions; the first scan of a transcript reads up to 2000 assistant events, so older messages in a very long manager transcript are missing.
 
 ## Install
 
