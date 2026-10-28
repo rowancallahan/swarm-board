@@ -30,6 +30,7 @@ test('board shows manager first, workers nested, and messages', async ($, on) =>
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('mcp.call', (_, e: any) => {
+    if (e.limit === undefined && e.args.limit > 20) return { value: { content: [{ type: 'text', text: 'Error: result (55,608 characters across 4 lines) exceeds maximum allowed tokens.' }], isError: true } }
     if (e.tool === 'list_sessions') return wrap({ data: sessions, has_more: false })
     if (e.tool === 'list_events') {
       const data = e.args.session_id === 'm' ? sendFrom('w1', 'start task A') : e.args.session_id === 'w1' ? sendFrom('m', 'task A done') : []
@@ -82,6 +83,7 @@ test('with no surface, /swarm prints the board as text', async ($, on) => {
   on('ui.open', () => ({ value: { isPlaced: false, reason: 'no-surface' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('mcp.call', (_, e: any) => {
+    if (e.limit === undefined && e.args.limit > 20) return { value: { content: [{ type: 'text', text: 'Error: result (55,608 characters across 4 lines) exceeds maximum allowed tokens.' }], isError: true } }
     if (e.tool === 'list_sessions') return wrap({ data: sessions, has_more: false })
     if (e.tool === 'list_events') {
       const data = e.args.session_id === 'm' ? sendFrom('w1', 'start task A') : e.args.session_id === 'w1' ? sendFrom('m', 'task A done') : []

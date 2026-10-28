@@ -8,8 +8,8 @@ const SERVER = 'claude-code-remote'
 const GITHUB = 'github'
 const SVG_MAX = 131_072 // Svg element's source limit
 const REFRESH_MS = 90_000
-const SESSION_PAGES = 3 // 100 sessions per page
-const EVENT_PAGES = 40 // first scan of one transcript, 100 events per page
+const MAX_SESSIONS = 300
+const MAX_EVENTS = 2000 // first scan of one transcript
 
 const swarms = atom({ plugin: 'swarm-board', key: 'swarms' } as const, [], { shape: 'swarms-1' })
 const selected = atom({ plugin: 'swarm-board', key: 'selected' } as const, '')
@@ -33,9 +33,19 @@ const cursors = new Map<string, string>() // session id -> newest event id read
 const seen = new Map<string, Msg>() // tool_use id -> message
 let busy = false
 
+// Page size per tool that last fit in one tool result.
+const fits = new Map<string, number>()
+
 async function call<T>($: EngineInterface, tool: string, args: Record<string, unknown>): Promise<T> {
+  if (typeof args.limit === 'number') args = { ...args, limit: Math.min(args.limit, fits.get(tool) ?? args.limit) }
   const r = await $.mcp.call(SERVER, tool, args)
   const text = r.content.map(b => b.text ?? '').join('')
+  // A page too large for one tool result comes back as this note: ask for half as many.
+  const limit = args.limit as number | undefined
+  if (text.includes('exceeds maximum allowed tokens') && limit && limit > 1) {
+    fits.set(tool, Math.floor(limit / 2))
+    return call($, tool, args)
+  }
   if (r.isError) throw new Error(`${tool}: ${text.slice(0, 300)}`)
   const i = text.indexOf('{"ccr"')
   const j = text.lastIndexOf('}')
@@ -84,8 +94,8 @@ const bucket = (s?: string) => (s ?? 'unknown').replace('SESSION_STATUS_BUCKET_'
 async function listSessions($: EngineInterface): Promise<Session[]> {
   const out: Session[] = []
   let after: string | undefined
-  for (let p = 0; p < SESSION_PAGES; p++) {
-    const page = await call<Page<Session>>($, 'list_sessions', { mine: true, limit: 100, ...(after ? { after_id: after } : {}) })
+  while (out.length < MAX_SESSIONS) {
+    const page = await call<Page<Session>>($, 'list_sessions', { mine: true, limit: 50, ...(after ? { after_id: after } : {}) })
     out.push(...page.data)
     if (!page.has_more) break
     after = page.last_id
@@ -109,7 +119,7 @@ function harvest(sid: string, events: { created_at: string; assistant?: any }[])
 }
 
 async function scanEvents($: EngineInterface, sid: string) {
-  const base = { session_id: sid, kinds: ['assistant'], limit: 100 }
+  const base = { session_id: sid, kinds: ['assistant'], limit: 25 }
   const last = cursors.get(sid)
   if (last) {
     let after = last
@@ -125,7 +135,8 @@ async function scanEvents($: EngineInterface, sid: string) {
   let page = await call<Page<any>>($, 'list_events', base)
   if (page.last_id) cursors.set(sid, page.last_id)
   harvest(sid, page.data)
-  for (let p = 1; p < EVENT_PAGES && page.has_more; p++) {
+  for (let n = page.data.length; n < MAX_EVENTS && page.has_more; n += page.data.length) {
+    assert(page.data.length > 0, `list_events ${sid}: empty page with has_more`)
     page = await call<Page<any>>($, 'list_events', { ...base, before_id: page.first_id })
     harvest(sid, page.data)
   }
