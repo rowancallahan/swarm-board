@@ -61,6 +61,12 @@ button { font: inherit; color: inherit; cursor: pointer; }
 [class*="s-"] .dot, .dot[class*="s-"] { background: var(--c); }
 .pill[class*="s-"] { background: var(--cb); color: var(--c); }
 .s-working .dot { box-shadow: 0 0 0 3px var(--ok-bg); }
+.views { display: flex; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.view { border: none; background: none; padding: 8px 14px; font-family: var(--f-display); font-size: 14px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.view:hover { color: var(--fg); }
+.view[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.view .n { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.view:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tabs { display: flex; gap: 4px; }
 .tab { border: none; background: none; padding: 4px 8px; border-radius: 6px; font-family: var(--f-display); font-size: 13px; font-weight: 500; color: var(--muted); }
 .tab[aria-selected="true"] { background: var(--bg); color: var(--fg); }
@@ -97,38 +103,41 @@ button { font: inherit; color: inherit; cursor: pointer; }
     <span class="sub" id="updated">connecting…</span>
     <span class="progress" id="progress"></span>
     <span class="spacer"></span>
+    <button class="btn" id="golive" type="button" hidden>Use live data</button>
     <button class="btn" id="refresh" type="button">Refresh</button>
   </header>
   <div class="swarms" id="swarms" aria-label="Swarms"></div>
+  <nav class="views" role="tablist" aria-label="Views">
+    <button class="view" role="tab" id="tab-agents" type="button" aria-selected="true">Agents</button>
+    <button class="view" role="tab" id="tab-board" type="button" aria-selected="false">Messages <span class="n" id="n-board"></span></button>
+    <button class="view" role="tab" id="tab-perf" type="button" aria-selected="false">Performance</button>
+    <button class="view" role="tab" id="tab-tests" type="button" aria-selected="false">Tests</button>
+  </nav>
   <div id="banner"></div>
-  <div class="grid">
+  <div class="grid" id="view-agents">
     <section class="panel" aria-label="Agents">
       <div class="head"><h2>Agents</h2><span class="spacer"></span><span class="sub" id="count"></span></div>
       <ul class="tree scroll" id="tree"><li class="empty">Loading your sessions…</li></ul>
     </section>
-    <section class="panel" aria-label="Detail">
-      <div class="head">
-        <div class="tabs" role="tablist">
-          <button class="tab" role="tab" id="tab-agent" type="button" aria-selected="true">Agent</button>
-          <button class="tab" role="tab" id="tab-board" type="button" aria-selected="false">Message board</button>
-          <button class="tab" role="tab" id="tab-posts" type="button" aria-selected="false">Perf &amp; tests</button>
-        </div>
-        <span class="spacer"></span>
-        <div class="filters" id="filters"></div>
-      </div>
-      <div class="scroll" id="main"><div class="empty">Pick an agent on the left.</div></div>
+    <section class="panel" aria-label="Agent detail">
+      <div class="scroll" id="detail"><div class="empty">Pick an agent on the left.</div></div>
     </section>
   </div>
+  <section class="panel" id="view-other" aria-label="View" hidden>
+    <div class="head"><h2 id="other-title"></h2><span class="spacer"></span><div class="filters" id="filters"></div></div>
+    <div class="scroll" id="other"></div>
+  </section>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
 <script>
 const SERVER = "Claude Code Remote";
+const PERM = "mcp:" + SERVER;
 const MAX_SESSIONS = 300, FIRST_PAGES = 60, REFRESH_MS = 90000;
 const S = {
-  mcp: null, sessions: new Map(), kids: new Map(), swarms: [], swarm: null, agent: null,
-  tab: "agent", filter: "all", msgs: new Map(), cursors: new Map(), fits: new Map(),
+  mcp: null, perms: null, live: false, snapAt: null, retried: false, sessions: new Map(), kids: new Map(), swarms: [], swarm: null, agent: null,
+  tab: "agents", filter: "all", msgs: new Map(), cursors: new Map(), fits: new Map(),
   manager: null, posts: { perf: null, tests: null }, pinned: null, updated: null, error: null, running: null, scanned: 0, toScan: 0, open: new Set(),
 };
 const $ = id => document.getElementById(id);
@@ -254,10 +263,44 @@ async function refreshOnce() {
   for (const id of ids) { await scan(id); S.scanned++; render(); }
   S.updated = new Date();
 }
+// posts/board.json: the manager's snapshot (snapshot tool of the swarm-board plugin).
+async function loadSnapshot() {
+  const r = await fetch("posts/board.json", { cache: "no-store" });
+  if (!r.ok) return false;
+  const snap = await r.json();
+  if (snap.version !== 1) throw Object.assign(new Error(`board.json version ${snap.version} is not supported`), { code: "bad_snapshot" });
+  S.sessions = new Map(); S.kids = new Map(); S.msgs = new Map();
+  for (const a of snap.agents) {
+    S.sessions.set(a.id, { id: a.id, title: a.title, status_bucket: "SESSION_STATUS_BUCKET_" + a.status.toUpperCase(), parent_session_id: a.parent ?? undefined,
+      updated_at: a.updated || snap.generatedAt, created_at: a.updated || snap.generatedAt, post_turn_summary: { recent_action: a.summary, needs_action: a.needs } });
+    if (a.parent) S.kids.set(a.parent, [...(S.kids.get(a.parent) ?? []), a.id]);
+  }
+  for (const m of snap.messages) S.msgs.set(m.key, { id: m.key, at: m.at, from: m.from, to: m.to.startsWith("new: ") ? null : m.to, toTitle: m.to.replace(/^new: /, ""), text: m.text, kind: m.to.startsWith("new: ") ? "spawn" : "message" });
+  S.swarm = snap.manager.id; S.pinned = snap.manager.id; S.swarms = [snap.manager.id];
+  S.manager = snap.manager.repo ? { session_context: { outcomes: [{ git_repository: { git_info: { repo: snap.manager.repo, branches: [snap.manager.branch] } } }] } } : null;
+  S.snapAt = snap.generatedAt; S.updated = snap.generatedAt ? new Date(snap.generatedAt) : null;
+  return true;
+}
+
+// Ask for connector access with the platform dialog, then load.
+async function allow() {
+  const r = await (S.perms?.request([PERM]) ?? Promise.resolve({})).catch(() => ({}));
+  if (r[PERM] === "denied") await S.perms.manage().catch(() => undefined);
+  S.live = (await S.perms.state(PERM).catch(() => "unavailable")) === "granted";
+  S.error = null;
+  return refresh();
+}
 function refresh() {
-  S.running ??= refreshOnce()
-    .then(() => { S.error = null; })
-    .catch(err => { S.error = err; })
+  S.running ??= (S.live ? refreshOnce() : loadPosts().then(loadSnapshot).then(ok => { if (!ok) throw Object.assign(new Error("No snapshot posted yet."), { code: "no_snapshot" }); }))
+    .then(() => { S.error = null; S.retried = false; })
+    .catch(async err => {
+      if (S.live && ["server_not_connected", "not_granted", "capability_disabled", "upstream_error", "not_in_manifest"].includes(err?.code) && await loadSnapshot().catch(() => false)) {
+        S.live = false; S.liveError = err; return;
+      }
+      S.error = err;
+      // A first call made before consent could be asked never reached the connector: retry once.
+      if (err?.retryable && !S.retried) { S.retried = true; setTimeout(() => refresh(), Math.min(err.retryAfterMs ?? 2000, 60000) + Math.random() * 1000); }
+    })
     .finally(() => { S.running = null; render(); });
   return S.running;
 }
@@ -271,10 +314,13 @@ function errorBanner() {
     approval_required: "This page needs your approval to read your sessions.",
     not_granted: "This view does not allow connector access. Open the page on claude.ai.",
     server_unavailable: "The session service did not answer. Try again in a moment.",
+    no_snapshot: "No board data posted yet. In the manager session, ask for the swarm board: it posts a snapshot with the swarm-board skill.",
   }[e.code] ?? "Reading your sessions failed.";
   return el("div", { class: "banner", role: "alert" },
     el("b", {}, e.code ?? "error"), el("span", {}, fix), el("span", { class: "sub" }, String(e.message ?? e).slice(0, 300)),
-    el("button", { class: "btn primary", type: "button", onclick: () => refresh() }, e.code === "approval_required" ? "Allow and retry" : "Retry"));
+    ["upstream_error", "approval_required", "not_in_manifest", "consent_required"].includes(e.code)
+      ? el("button", { class: "btn primary", type: "button", onclick: () => allow() }, "Allow access to your sessions")
+      : el("button", { class: "btn primary", type: "button", onclick: () => refresh() }, "Retry"));
 }
 
 function renderSwarms() {
@@ -295,7 +341,7 @@ function renderTree() {
   for (const [id, d] of rows) {
     const s = S.sessions.get(id), st = bucket(s), sum = s.post_turn_summary;
     ul.append(el("li", {},
-      el("button", { class: `row s-${st}`, type: "button", style: `padding-left:${8 + d * 18}px`, "aria-current": String(id === S.agent), onclick: () => { S.agent = id; S.tab = "agent"; render(); } },
+      el("button", { class: `row s-${st}`, type: "button", style: `padding-left:${8 + d * 18}px`, "aria-current": String(id === S.agent), onclick: () => { S.agent = id; render(); } },
         el("span", { class: "dot" }),
         el("span", { class: "t" },
           el("span", { class: "name" }, d === 0 ? el("span", { class: "mgr" }, "MANAGER") : null, s.title || id),
@@ -320,39 +366,20 @@ function swarmMsgs() {
   return [...S.msgs.values()].filter(m => ids.has(m.from)).sort((a, b) => a.at.localeCompare(b.at));
 }
 
-function renderMain() {
-  for (const t of ["agent", "board", "posts"]) $("tab-" + t).setAttribute("aria-selected", String(S.tab === t));
-  const main = $("main"), f = $("filters"); main.replaceChildren(); f.replaceChildren();
-  if (S.tab === "board") {
-    for (const [k, txt] of [["all", "All"], ["mgr-out", "From manager"], ["mgr-in", "To manager"]])
-      f.append(el("button", { class: "chip", type: "button", "aria-pressed": String(S.filter === k), onclick: () => { S.filter = k; render(); } }, txt));
-    let ms = swarmMsgs();
-    if (S.filter === "mgr-out") ms = ms.filter(m => m.from === S.swarm);
-    if (S.filter === "mgr-in") ms = ms.filter(m => m.to === S.swarm);
-    main.append(ms.length ? el("ul", { class: "msgs" }, ms.map(msgItem)) : el("div", { class: "empty" }, S.scanned < S.toScan ? "Reading transcripts…" : "No messages between these sessions yet."));
-    return;
-  }
-  if (S.tab === "posts") {
-    if (S.posts.perf || S.posts.tests) {
-      const box = el("div", { class: "links" });
-      if (S.posts.perf) box.append(el("h3", {}, "Performance"), mdNode(S.posts.perf));
-      if (S.posts.tests) box.append(el("h3", {}, "Tests and CI"), mdNode(S.posts.tests));
-      main.append(box);
-      return;
-    }
-    const git = S.manager?.session_context?.outcomes?.[0]?.git_repository?.git_info;
-    const branch = git?.branches?.[0];
-    if (!git || !branch) { main.append(el("div", { class: "empty" }, S.manager ? "The manager session has no repo branch." : "Loading the manager session…")); return; }
-    const blob = p => `https://github.com/${git.repo}/blob/${branch}/${p}`;
-    main.append(el("div", { class: "links" },
-      el("div", {}, "Agents post performance and CI results to two files on the manager's branch ", el("code", {}, `${git.repo}@${branch}`), ":"),
-      el("div", {}, el("a", { href: blob(".swarm/perf.md"), target: "_blank", rel: "noopener" }, "Performance: .swarm/perf.md ↗")),
-      el("div", {}, el("a", { href: blob(".swarm/tests.md"), target: "_blank", rel: "noopener" }, "Tests and CI: .swarm/tests.md ↗")),
-      el("div", { class: "sub" }, "Nothing posted to this page yet. Ask the manager to post an update with the swarm-board skill: it publishes posts/perf.md, posts/tests.md and SVG plots into this page.")));
-    return;
-  }
+function postView(k) {
+  const text = S.posts[k];
+  if (text) return el("div", { class: "links" }, mdNode(text));
+  const git = S.manager?.session_context?.outcomes?.[0]?.git_repository?.git_info;
+  return el("div", { class: "links" },
+    el("div", {}, k === "perf" ? "No performance results posted yet." : "No test or CI results posted yet."),
+    el("div", { class: "sub" }, `Ask the manager to post an update with the swarm-board skill. It publishes posts/${k}.md${k === "perf" ? " and SVG plots" : ""} into this page.`),
+    git?.branches?.[0] ? el("div", {}, el("a", { href: `https://github.com/${git.repo}/tree/${git.branches[0]}`, target: "_blank", rel: "noopener" }, `Manager's branch: ${git.repo}@${git.branches[0]} ↗`)) : null);
+}
+
+function renderDetail() {
+  const main = $("detail"); main.replaceChildren();
   const id = S.agent ?? S.swarm;
-  if (!id) { main.append(el("div", { class: "empty" }, "Pick an agent on the left.")); return; }
+  if (!id || !S.sessions.has(id)) { main.append(el("div", { class: "empty" }, "Pick an agent on the left.")); return; }
   const s = S.sessions.get(id), st = bucket(s), sum = s.post_turn_summary;
   const mine = swarmMsgs().filter(m => m.from === id || m.to === id);
   main.append(el("div", { class: "detail" },
@@ -368,28 +395,48 @@ function renderMain() {
   main.append(mine.length ? el("ul", { class: "msgs" }, mine.map(msgItem)) : el("div", { class: "empty" }, S.scanned < S.toScan ? "Reading transcripts…" : "No messages to or from this agent."));
 }
 
+function renderMain() {
+  for (const t of ["agents", "board", "perf", "tests"]) $("tab-" + t).setAttribute("aria-selected", String(S.tab === t));
+  $("n-board").textContent = S.swarm ? swarmMsgs().length : "";
+  $("view-agents").hidden = S.tab !== "agents";
+  $("view-other").hidden = S.tab === "agents";
+  if (S.tab === "agents") { renderDetail(); return; }
+  const main = $("other"), f = $("filters"); main.replaceChildren(); f.replaceChildren();
+  $("other-title").textContent = { board: "Message board", perf: "Performance", tests: "Tests and CI" }[S.tab];
+  if (S.tab === "board") {
+    for (const [k, txt] of [["all", "All"], ["mgr-out", "From manager"], ["mgr-in", "To manager"]])
+      f.append(el("button", { class: "chip", type: "button", "aria-pressed": String(S.filter === k), onclick: () => { S.filter = k; render(); } }, txt));
+    let ms = swarmMsgs();
+    if (S.filter === "mgr-out") ms = ms.filter(m => m.from === S.swarm);
+    if (S.filter === "mgr-in") ms = ms.filter(m => m.to === S.swarm);
+    main.append(ms.length ? el("ul", { class: "msgs" }, ms.map(msgItem)) : el("div", { class: "empty" }, S.scanned < S.toScan ? "Reading transcripts…" : "No messages between these sessions yet."));
+    return;
+  }
+  main.append(postView(S.tab));
+}
+
 function render() {
   renderSwarms(); renderTree(); renderMain();
   const b = $("banner"); b.replaceChildren(); const e = errorBanner(); if (e) b.append(e);
-  $("updated").textContent = S.updated ? `updated ${hhmm(S.updated.toISOString())}` : S.running ? "loading…" : "not loaded";
+  $("updated").textContent = S.updated ? `${S.live ? "live, updated" : "snapshot from"} ${day(S.updated.toISOString())} ${hhmm(S.updated.toISOString())}` : S.running ? "loading…" : "not loaded";
   $("progress").textContent = S.running && S.toScan ? `reading transcripts ${S.scanned}/${S.toScan}` : "";
   $("refresh").disabled = !!S.running;
+  $("golive").hidden = !S.mcp || S.live;
 }
 
-for (const t of ["agent", "board", "posts"]) $("tab-" + t).addEventListener("click", () => { S.tab = t; render(); });
+for (const t of ["agents", "board", "perf", "tests"]) $("tab-" + t).addEventListener("click", () => { S.tab = t; render(); });
 $("refresh").addEventListener("click", () => refresh());
+$("golive").addEventListener("click", () => allow());
 
 (async () => {
   const m = location.hash.match(/^#m-([A-Za-z0-9]+)$/);
   if (m) S.pinned = "session_" + m[1];
   render();
+  // Live data needs the Claude Code Remote connector; without it the page shows the manager's snapshot.
   S.mcp = await window.claude?.use?.("mcp") ?? null;
-  if (!S.mcp) {
-    S.error = { code: "not_granted", message: "Connector access is not available in this view." };
-    $("tree").replaceChildren(el("li", { class: "empty" }, "Open this page on claude.ai to see your sessions."));
-    render();
-    return;
-  }
+  S.perms = await window.claude?.use?.("permissions") ?? null;
+  const st = S.mcp && S.perms ? await S.perms.state(PERM).catch(() => "unavailable") : "unavailable";
+  S.live = st === "granted";
   await refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
 })();

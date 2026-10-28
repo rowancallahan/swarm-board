@@ -27,6 +27,7 @@ const need = async (ui: any, q: any, surface: string) => {
 test('board shows manager first, workers nested, and messages', async ($, on) => {
   const clock = mock.clock(on)
   on('command.register', () => ({ value: { command: 'swarm' } }))
+  on('tool.register', () => ({ value: { tool: 'mcp__swarm-board__snapshot' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('mcp.call', (_, e: any) => {
@@ -81,6 +82,7 @@ test('board shows manager first, workers nested, and messages', async ($, on) =>
 test('with no surface, /swarm prints the board as text', async ($, on) => {
   const clock = mock.clock(on)
   on('command.register', () => ({ value: { command: 'swarm' } }))
+  on('tool.register', () => ({ value: { tool: 'mcp__swarm-board__snapshot' } }))
   on('ui.open', () => ({ value: { isPlaced: false, reason: 'no-surface' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('mcp.call', (_, e: any) => {
@@ -112,4 +114,44 @@ test('with no surface, /swarm prints the board as text', async ($, on) => {
   expect((await run('msgs')).text).toMatch(/MANAGER → worker one\*\*: start task A/)
   expect((await run('perf')).text).toMatch(/\[plot: ir per commit\]\(https:\/\/github.com\/o\/proj\/blob\/main\/.swarm\/plots\/ir.svg\)/)
   expect((await run('tests')).text).toMatch(/Nothing posted yet/)
+})
+
+test('the snapshot tool writes the board as JSON', async ($, on) => {
+  const clock = mock.clock(on)
+  on('command.register', () => ({ value: { command: 'swarm' } }))
+  on('tool.register', () => ({ value: { tool: 'mcp__swarm-board__snapshot' } }))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'no-surface' } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('mcp.call', (_, e: any) => {
+    if (e.limit === undefined && e.args.limit > 20) return { value: { content: [{ type: 'text', text: 'Error: result (55,608 characters across 4 lines) exceeds maximum allowed tokens.' }], isError: true } }
+    if (e.tool === 'list_sessions') return wrap({ data: sessions, has_more: false })
+    if (e.tool === 'list_events') {
+      if (e.args.session_id === 'w2') return wrap({ has_more: false, first_id: 'a', last_id: 'b' })
+      const data = e.args.session_id === 'm' ? sendFrom('w1', 'start task A') : e.args.session_id === 'w1' ? sendFrom('m', 'task A done') : []
+      return wrap({ data, has_more: false, first_id: 'a', last_id: 'b' })
+    }
+    if (e.tool === 'get_session') return wrap({ ...sessions[2], session_context: { outcomes: [{ git_repository: { git_info: { repo: 'o/proj', branches: ['main'] } } }] } })
+    if (e.tool === 'get_file_contents') {
+      expect(e.args.ref).toBe('refs/heads/main')
+      const files: Record<string, string> = {
+        '.swarm/perf.md': '# Speed\nInstructions per commit\n![ir per commit](plots/ir.svg)\nafter plot',
+        '.swarm/plots/ir.svg': '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>',
+      }
+      const body = files[e.args.path]
+      if (body === undefined) return { value: { content: [{ type: 'text', text: 'Failed to get file contents. The path does not point to a file or directory, or the file does not exist in the repository.' }], isError: true } }
+      return { value: { content: [{ type: 'text', text: 'successfully downloaded text file' }, { type: 'resource', resource: { uri: 'repo://x', text: body } }], isError: false } }
+    }
+    throw new Error(`unexpected ${e.tool}`)
+  })
+
+  const written: { path: string; text: string }[] = []
+  on('fs.write', (_, e: any) => { written.push({ path: e.path, text: e.text }); return { value: undefined } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const r = await ($.tool.call as (i: object) => Promise<{ result?: unknown }>)({ tool: 'mcp__swarm-board__snapshot', path: '/tmp/b.json', manager: 'm' })
+  expect(String(r.result)).toMatch(/Wrote \/tmp\/b.json .*2 workers, 2 messages/)
+  const snap = JSON.parse(written[0]!.text)
+  expect(snap.manager).toEqual({ id: 'm', title: 'Lean align: MANAGER', repo: 'o/proj', branch: 'main' })
+  expect(snap.agents.map((a: any) => [a.id, a.depth, a.status])).toEqual([['m', 0, 'completed'], ['w1', 1, 'working'], ['w2', 1, 'failed']])
+  expect(snap.messages.map((m: any) => m.text).sort()).toEqual(['start task A', 'task A done'])
 })

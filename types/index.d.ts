@@ -5,6 +5,8 @@ export type Agent = {
   summary: string
   depth: number
   parent: string | null
+  updated: string
+  needs: string
 }
 export type Msg = { key: string; at: string; from: string; to: string; text: string }
 export type Swarm = { id: string; title: string; workers: number }

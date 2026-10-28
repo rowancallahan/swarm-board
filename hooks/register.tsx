@@ -14,7 +14,7 @@ const MAX_PAGES = 80 // first scan of one transcript, pages read before the filt
 const swarms = atom({ plugin: 'swarm-board', key: 'swarms' } as const, [], { shape: 'swarms-1' })
 const selected = atom({ plugin: 'swarm-board', key: 'selected' } as const, '')
 const tab = atom({ plugin: 'swarm-board', key: 'tab' } as const, 'agents')
-const board = atom({ plugin: 'swarm-board', key: 'board' } as const, { agents: [], messages: [], updatedAt: '' }, { shape: 'board-1' })
+const board = atom({ plugin: 'swarm-board', key: 'board' } as const, { agents: [], messages: [], updatedAt: '' }, { shape: 'board-2' })
 const posts = atom({ plugin: 'swarm-board', key: 'posts' } as const, { where: '', perf: [], tests: [] }, { shape: 'posts-2' })
 
 type Session = {
@@ -23,7 +23,7 @@ type Session = {
   status_bucket?: string
   parent_session_id?: string
   updated_at: string
-  post_turn_summary?: { recent_action?: string }
+  post_turn_summary?: { recent_action?: string; needs_action?: string }
   session_context?: { outcomes?: { git_repository?: { git_info?: { repo: string; branches: string[] } } }[] }
 }
 // `data` is left out when a kinds filter kept nothing from the page read (has_more may still be true).
@@ -180,7 +180,7 @@ async function refreshOnce($: EngineInterface) {
 
     const agents: Agent[] = []
     const walk = (s: Session, depth: number) => {
-      agents.push({ id: s.id, title: s.title ?? s.id, status: bucket(s.status_bucket), summary: s.post_turn_summary?.recent_action ?? '', depth, parent: s.parent_session_id ?? null })
+      agents.push({ id: s.id, title: s.title ?? s.id, status: bucket(s.status_bucket), summary: s.post_turn_summary?.recent_action ?? '', depth, parent: s.parent_session_id ?? null, updated: s.updated_at, needs: s.post_turn_summary?.needs_action ?? '' })
       for (const k of kids.get(s.id) ?? []) walk(k, depth + 1)
     }
     const manager = await call<Session>($, 'get_session', { session_id: sel })
@@ -338,13 +338,58 @@ async function boardText($: EngineInterface, view: string): Promise<string> {
   ].join('\n')
 }
 
+
+// The board's data as JSON for the web page (skills/swarm-board/board.html reads posts/board.json).
+async function snapshotJson($: EngineInterface): Promise<string> {
+  const b = await read($, board)
+  const p = await read($, posts)
+  const sel = await read($, selected)
+  const mgr = b.agents[0]
+  assert(!!mgr && mgr.id === sel, 'no manager loaded')
+  const [repo, branch] = p.where.includes('@') ? p.where.split('@') : ['', '']
+  return JSON.stringify({
+    version: 1,
+    generatedAt: b.updatedAt,
+    manager: { id: mgr.id, title: mgr.title, repo, branch },
+    agents: b.agents,
+    messages: b.messages.map(m => ({ ...m, text: m.text.length > 4000 ? `${m.text.slice(0, 4000)}…` : m.text })),
+  })
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'swarm', description: 'Open the swarm board (manager, workers, messages)' })
+    await $.tool.register({
+      name: 'snapshot',
+      description: 'Refresh the swarm board for a manager session (default: the most recently active one) and write its data (worker tree, statuses, messages) as JSON to `path`, for publishing into the Swarm Board page as posts/board.json. See the swarm-board skill.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute file path to write, e.g. in your scratchpad: <scratchpad>/swarm-board/board.json' },
+          manager: { type: 'string', description: 'Manager session id (session_...). Omit for the most recently active manager.' },
+        },
+        required: ['path'],
+      },
+      isDeferred: false,
+    })
     void $.ui.open({ id: PANE, title: 'Swarm' })
     void refresh($)
     $.clock.every(REFRESH_MS, () => void refresh($))
     return next(e)
+  })
+
+  on('tool.call', { tool: /^mcp__swarm-board__snapshot$/ }, async ($, e: unknown) => {
+    const input = e as unknown as { path: string; manager?: string }
+    assert(input.path.startsWith('/'), `path must be absolute: ${input.path}`)
+    if (input.manager) {
+      const id = input.manager.startsWith('session_') ? input.manager : `session_${input.manager}`
+      await update($, selected, () => id)
+    }
+    await refresh($)
+    const json = await snapshotJson($)
+    await $.fs.write(input.path, json)
+    const b = await read($, board)
+    return { result: `Wrote ${input.path} (${json.length} bytes): ${b.agents[0]!.title}, ${b.agents.length - 1} workers, ${b.messages.length} messages, data from ${b.updatedAt}.` }
   })
 
   on('command.run', { command: 'swarm' }, async ($, e) => {

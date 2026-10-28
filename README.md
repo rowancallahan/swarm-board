@@ -23,7 +23,7 @@ Limits: scans your 300 most recent sessions; the first scan of a transcript read
 
 ## Web board (claude.ai page)
 
-The plugin also ships a `swarm-board` skill. In a manager session, ask for "the swarm board": the manager publishes `skills/swarm-board/board.html` as a private claude.ai page pinned to itself (`<url>#m-<session id without session_>`). The page reads your sessions live through the Claude Code Remote connector: worker tree with status, click an agent for its summary, messages and a link to its session, and a merged message board. To post perf and CI results, the manager publishes `posts/perf.md`, `posts/tests.md` and `posts/plots/*.svg` into the page (steps in the skill).
+The plugin also ships a `swarm-board` skill. In a manager session, ask for "the swarm board": the manager publishes `skills/swarm-board/board.html` as a private claude.ai page pinned to itself (`<url>#m-<session id without session_>`). The page shows a snapshot the manager posts (`posts/board.json`, written by the plugin's `snapshot` tool): worker tree with status, click an agent for its summary, messages and a link to its session, and a merged message board. To post perf and CI results, the manager publishes `posts/perf.md`, `posts/tests.md` and `posts/plots/*.svg` into the page (steps in the skill).
 
 ## Install
 
