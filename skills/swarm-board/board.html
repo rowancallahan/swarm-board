@@ -44,7 +44,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; display: flex; flex-direction: column; }
 .panel > .head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .panel > .head h2 { font-family: var(--f-display); font-size: 14px; font-weight: 500; margin: 0; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-.scroll { overflow-y: auto; max-height: calc(100vh - 210px); min-height: 200px; }
+.scroll { overflow-y: auto; max-height: calc(100vh - 170px); min-height: 200px; }
 @media (max-width: 820px) { .scroll { max-height: 60vh; } }
 .tree { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
 .row { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 8px; align-items: start; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 6px; padding: 6px 8px; }
@@ -92,6 +92,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .md table { border-collapse: collapse; display: block; overflow-x: auto; font-variant-numeric: tabular-nums; } .md th, .md td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
 .md code { font-family: var(--f-mono); font-size: 12px; } .md h1, .md h2 { font-family: var(--f-display); font-size: 16px; margin: 10px 0 4px; }
 .links h3 { font-family: var(--f-display); font-size: 15px; margin: 6px 0 0; }
+.back { padding: 10px 12px 0; }
 .progress { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
 @media (prefers-reduced-motion: no-preference) { .s-working .dot { animation: pulse 2s ease-in-out infinite; } }
 @keyframes pulse { 50% { box-shadow: 0 0 0 5px transparent; } }
@@ -115,16 +116,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
     <button class="view" role="tab" id="tab-tests" type="button" aria-selected="false">Tests</button>
   </nav>
   <div id="banner"></div>
-  <div class="grid" id="view-agents">
-    <section class="panel" aria-label="Agents">
-      <div class="head"><h2>Agents</h2><span class="spacer"></span><span class="sub" id="count"></span></div>
-      <ul class="tree scroll" id="tree"><li class="empty">Loading your sessions…</li></ul>
-    </section>
-    <section class="panel" aria-label="Agent detail">
-      <div class="scroll" id="detail"><div class="empty">Pick an agent on the left.</div></div>
-    </section>
-  </div>
-  <section class="panel" id="view-other" aria-label="View" hidden>
+  <section class="panel" id="view-other" aria-label="View">
     <div class="head"><h2 id="other-title"></h2><span class="spacer"></span><div class="filters" id="filters"></div></div>
     <div class="scroll" id="other"></div>
   </section>
@@ -334,21 +326,21 @@ function renderSwarms() {
   }
 }
 
-function renderTree() {
-  const ul = $("tree"); ul.replaceChildren();
+function treeList() {
+  const ul = el("ul", { class: "tree" });
   const rows = treeIds(S.swarm).slice(1).map(([id, d]) => [id, d - 1]);
-  $("count").textContent = rows.length ? `${rows.length} workers` : "";
-  if (!rows.length) { ul.append(el("li", { class: "empty" }, S.running ? "Loading your sessions…" : S.swarm ? "This manager has no workers." : "No board data yet.")); return; }
+  if (!rows.length) { ul.append(el("li", { class: "empty" }, S.running ? "Loading your sessions…" : S.swarm ? "This manager has no workers." : "No board data yet.")); return ul; }
   for (const [id, d] of rows) {
     const s = S.sessions.get(id), st = bucket(s), sum = s.post_turn_summary;
     ul.append(el("li", {},
-      el("button", { class: `row s-${st}`, type: "button", style: `padding-left:${8 + d * 18}px`, "aria-current": String(id === (S.agent ?? rows[0][0])), onclick: () => { S.agent = id; render(); } },
+      el("button", { class: `row s-${st}`, type: "button", style: `padding-left:${8 + d * 18}px`, onclick: () => { S.agent = id; render(); $("other").scrollTop = 0; } },
         el("span", { class: "dot" }),
         el("span", { class: "t" },
           el("span", { class: "name" }, s.title || id),
           sum?.needs_action ? el("span", { class: "sum", style: "color:var(--warn)" }, "Needs you: " + sum.needs_action) : sum?.recent_action ? el("span", { class: "sum" }, sum.recent_action) : null),
         el("span", { class: `pill s-${st}` }, st.replace("_", " ")))));
   }
+  return ul;
 }
 
 function msgItem(m) {
@@ -377,13 +369,6 @@ function postView(k) {
     git?.branches?.[0] ? el("div", {}, el("a", { href: `https://github.com/${git.repo}/tree/${git.branches[0]}`, target: "_blank", rel: "noopener" }, `Manager's branch: ${git.repo}@${git.branches[0]} ↗`)) : null);
 }
 
-function renderDetail() {
-  const main = $("detail"); main.replaceChildren();
-  const id = S.agent ?? treeIds(S.swarm)[1]?.[0];
-  if (!id || !S.sessions.has(id)) { main.append(el("div", { class: "empty" }, "Pick an agent on the left.")); return; }
-  main.append(...detailNodes(id));
-}
-
 function detailNodes(id) {
   const main = { nodes: [], append(...n) { this.nodes.push(...n); } };
   const s = S.sessions.get(id), st = bucket(s), sum = s.post_turn_summary;
@@ -406,11 +391,14 @@ function renderMain() {
   for (const t of ["manager", "agents", "board", "perf", "tests"]) $("tab-" + t).setAttribute("aria-selected", String(S.tab === t));
   $("n-board").textContent = S.swarm ? swarmMsgs().length : "";
   $("n-agents").textContent = S.swarm ? treeIds(S.swarm).length - 1 : "";
-  $("view-agents").hidden = S.tab !== "agents";
-  $("view-other").hidden = S.tab === "agents";
-  if (S.tab === "agents") { renderDetail(); return; }
   const main = $("other"), f = $("filters"); main.replaceChildren(); f.replaceChildren();
-  $("other-title").textContent = { manager: "Manager", board: "Message board", perf: "Performance", tests: "Tests and CI" }[S.tab];
+  $("other-title").textContent = { manager: "Manager", agents: S.agent ? "Agent" : "Agents", board: "Message board", perf: "Performance", tests: "Tests and CI" }[S.tab];
+  if (S.tab === "agents") {
+    if (S.agent && S.sessions.has(S.agent)) {
+      main.append(el("div", { class: "back" }, el("button", { class: "btn", type: "button", onclick: () => { S.agent = null; render(); } }, "← All agents")), ...detailNodes(S.agent));
+    } else main.append(treeList());
+    return;
+  }
   if (S.tab === "manager") {
     main.append(...(S.swarm && S.sessions.has(S.swarm) ? detailNodes(S.swarm) : [el("div", { class: "empty" }, S.running ? "Loading…" : "No manager loaded.")]));
     return;
@@ -428,7 +416,7 @@ function renderMain() {
 }
 
 function render() {
-  renderSwarms(); renderTree(); renderMain();
+  renderSwarms(); renderMain();
   const b = $("banner"); b.replaceChildren(); const e = errorBanner(); if (e) b.append(e);
   $("updated").textContent = S.updated ? `${S.live ? "live, updated" : "snapshot from"} ${day(S.updated.toISOString())} ${hhmm(S.updated.toISOString())}` : S.running ? "loading…" : "not loaded";
   $("progress").textContent = S.running && S.toScan ? `reading transcripts ${S.scanned}/${S.toScan}` : "";
@@ -436,7 +424,7 @@ function render() {
   $("golive").hidden = !S.mcp || S.live;
 }
 
-for (const t of ["manager", "agents", "board", "perf", "tests"]) $("tab-" + t).addEventListener("click", () => { S.tab = t; render(); });
+for (const t of ["manager", "agents", "board", "perf", "tests"]) $("tab-" + t).addEventListener("click", () => { if (t === "agents") S.agent = null; S.tab = t; render(); });
 $("refresh").addEventListener("click", () => refresh());
 $("golive").addEventListener("click", () => allow());
 
