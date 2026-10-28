@@ -1,10 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Agent, Board, Msg, Swarm } from '../types'
+import type { Agent, Board, Msg, Part, Posts, Swarm } from '../types'
 
 const PANE = 'swarm-board'
 const SERVER = 'claude-code-remote'
+const GITHUB = 'github'
+const SVG_MAX = 131_072 // Svg element's source limit
 const REFRESH_MS = 90_000
 const SESSION_PAGES = 3 // 100 sessions per page
 const EVENT_PAGES = 40 // first scan of one transcript, 100 events per page
@@ -13,6 +15,7 @@ const swarms = atom({ plugin: 'swarm-board', key: 'swarms' } as const, [], { sha
 const selected = atom({ plugin: 'swarm-board', key: 'selected' } as const, '')
 const tab = atom({ plugin: 'swarm-board', key: 'tab' } as const, 'agents')
 const board = atom({ plugin: 'swarm-board', key: 'board' } as const, { agents: [], messages: [], updatedAt: '' }, { shape: 'board-1' })
+const posts = atom({ plugin: 'swarm-board', key: 'posts' } as const, { where: '', perf: [], tests: [] }, { shape: 'posts-1' })
 
 type Session = {
   id: string
@@ -21,6 +24,7 @@ type Session = {
   parent_session_id?: string
   updated_at: string
   post_turn_summary?: { recent_action?: string }
+  session_context?: { outcomes?: { git_repository?: { git_info?: { repo: string; branches: string[] } } }[] }
 }
 type Page<T> = { data: T[]; has_more: boolean; first_id?: string; last_id?: string }
 
@@ -37,6 +41,42 @@ async function call<T>($: EngineInterface, tool: string, args: Record<string, un
   const j = text.lastIndexOf('}')
   if (i < 0 || j < i) throw new Error(`${tool}: no ccr JSON in ${text.slice(0, 300)}`)
   return JSON.parse(text.slice(i, j + 1)).ccr
+}
+
+// A file on GitHub, or null when it is not there yet. Any other failure throws.
+async function ghFile($: EngineInterface, repo: string, branch: string, path: string): Promise<string | null> {
+  const [owner, name] = repo.split('/')
+  assert(!!owner && !!name, `bad repo ${repo}`)
+  const r = await $.mcp.call(GITHUB, 'get_file_contents', { owner, repo: name, path, ref: `refs/heads/${branch}` })
+  const texts = r.content.map(b => b.text ?? (b.resource as { text?: string } | undefined)?.text ?? '')
+  if (r.isError) {
+    if (texts.join('').includes('does not exist')) return null
+    throw new Error(`get_file_contents ${repo}@${branch}:${path}: ${texts.join('').slice(0, 300)}`)
+  }
+  const body = r.content.find(b => b.type === 'resource')
+  assert(!!body, `no file body for ${path}`)
+  return (body.resource as { text: string }).text
+}
+
+// Splits markdown on lines that are just `![alt](x.svg)`, fetching each SVG next to the file.
+async function postFile($: EngineInterface, repo: string, branch: string, path: string): Promise<Part[]> {
+  const md = await ghFile($, repo, branch, path)
+  if (md === null) return []
+  const dir = path.slice(0, path.lastIndexOf('/') + 1)
+  const parts: Part[] = []
+  let buf: string[] = []
+  const flush = () => { if (buf.join('').trim()) parts.push({ kind: 'md', text: buf.join('\n') }); buf = [] }
+  for (const line of md.split('\n')) {
+    const m = line.trim().match(/^!\[([^\]]*)\]\(([^)\s]+\.svg)\)$/)
+    if (!m || m[2]!.includes('://')) { buf.push(line); continue }
+    flush()
+    const svg = await ghFile($, repo, branch, dir + m[2]!.replace(/^\.\//, ''))
+    if (svg === null) parts.push({ kind: 'md', text: `_missing plot: ${m[2]}_` })
+    else if (svg.length > SVG_MAX) parts.push({ kind: 'md', text: `_plot too large (${svg.length} chars > ${SVG_MAX}): ${m[2]}_` })
+    else parts.push({ kind: 'svg', alt: m[1] || m[2]!, source: svg })
+  }
+  flush()
+  return parts
 }
 
 const bucket = (s?: string) => (s ?? 'unknown').replace('SESSION_STATUS_BUCKET_', '').toLowerCase()
@@ -120,6 +160,8 @@ async function refresh($: EngineInterface) {
       agents.push({ id: s.id, title: s.title ?? s.id, status: bucket(s.status_bucket), summary: s.post_turn_summary?.recent_action ?? '', depth, parent: s.parent_session_id ?? null })
       for (const k of kids.get(s.id) ?? []) walk(k, depth + 1)
     }
+    const manager = await call<Session>($, 'get_session', { session_id: sel })
+    const git = manager.session_context?.outcomes?.[0]?.git_repository?.git_info
     walk(byId.get(sel)!, 0)
     assert(agents[0]!.depth === 0, 'manager must be first')
 
@@ -127,6 +169,15 @@ async function refresh($: EngineInterface) {
     const ids = new Set(agents.map(a => a.id))
     const messages = [...seen.values()].filter(m => ids.has(m.from)).sort((x, y) => x.at.localeCompare(y.at))
     await update($, board, () => ({ agents, messages, updatedAt: new Date().toISOString() }))
+
+    const branch = git?.branches[0]
+    if (!git || !branch) {
+      await update($, posts, () => ({ where: 'manager session has no repo branch', perf: [], tests: [] }))
+      return
+    }
+    const perf = await postFile($, git.repo, branch, '.swarm/perf.md')
+    const tests = await postFile($, git.repo, branch, '.swarm/tests.md')
+    await update($, posts, () => ({ where: `${git.repo}@${branch}`, perf, tests }))
   } finally {
     busy = false
   }
@@ -161,7 +212,24 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown } = ui
+    const p = await read($, posts)
+    const drawParts = (parts: Part[], file: string) => (
+      <Box flexDirection="column" gap={1}>
+        <Text dimColor>{p.where ? `${p.where} · .swarm/${file}` : 'loading…'}</Text>
+        {p.where && parts.length === 0 && <Text dimColor>{`Nothing posted yet. Agents commit .swarm/${file} (markdown; SVG plots as ![alt](plots/x.svg)) to the manager's branch.`}</Text>}
+        {parts.map((part, i) =>
+          part.kind === 'md' ? (
+            <Markdown key={`p-${file}-${i}`} text={part.text} />
+          ) : e.surface !== 'terminal' && 'Svg' in ui ? (
+            <ui.Svg source={part.source} alt={part.alt} />
+          ) : (
+            <Text dimColor>[plot: {part.alt} — open in the desktop or web app]</Text>
+          ),
+        )}
+      </Box>
+    )
     const list = await read($, swarms)
     const sel = await read($, selected)
     const view = await read($, tab)
@@ -171,6 +239,7 @@ export const register: Register = on => {
     const pick = (id: string) => () => {
       void update($, selected, () => id)
       void update($, board, () => ({ agents: [], messages: [], updatedAt: '' }))
+      void update($, posts, () => ({ where: '', perf: [], tests: [] }))
       void refresh($)
     }
 
@@ -191,10 +260,16 @@ export const register: Register = on => {
           <Button key="t-msgs" variant={view === 'messages' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'messages')}>
             Messages {b.messages.length}
           </Button>
+          <Button key="t-perf" variant={view === 'perf' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'perf')}>
+            Perf
+          </Button>
+          <Button key="t-tests" variant={view === 'tests' ? 'primary' : 'secondary'} onPress={() => void update($, tab, () => 'tests')}>
+            Tests
+          </Button>
           <Button key="refresh" plain onPress={() => void refresh($)}>↻</Button>
           <Text dimColor>{b.updatedAt ? `updated ${hhmm(b.updatedAt)}Z` : 'loading…'}</Text>
         </Box>
-        {view === 'agents' ? (
+        {view === 'perf' ? drawParts(p.perf, 'perf.md') : view === 'tests' ? drawParts(p.tests, 'tests.md') : view === 'agents' ? (
           <Box flexDirection="column">
             {b.agents.map(a => {
               const [g, c] = GLYPH[a.status] ?? ['○', 'gray']
